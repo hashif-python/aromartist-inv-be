@@ -1,0 +1,381 @@
+{
+  "warehouses": [
+    {
+      "id": "wh-1",
+      "code": "WH-CENTRAL",
+      "name": "Central Warehouse",
+      "location": "Industrial Area, Block B",
+      "manager": "Rashid Khan",
+      "rawMaterialValue": 485000,
+      "finishedStockValue": 1250000,
+      "status": "active"
+    },
+    {
+      "id": "wh-2",
+      "code": "WH-PKG",
+      "name": "Packaging Depot",
+      "location": "Logistics Park, Hub 3",
+      "manager": "Sana Malik",
+      "rawMaterialValue": 120000,
+      "finishedStockValue": 340000,
+      "status": "active"
+    }
+  ],
+  "branches": [
+    {
+      "id": "br-1",
+      "code": "BR-DOWNTOWN",
+      "name": "Downtown Boutique",
+      "location": "Flagship Ave, Shop 12",
+      "manager": "Amina Al-Mansoor",
+      "finishedStockValue": 890000,
+      "todaySales": 48500,
+      "status": "active"
+    },
+    {
+      "id": "br-2",
+      "code": "BR-MALL",
+      "name": "Grand Mall Kiosk",
+      "location": "Grand Mall 1st Floor",
+      "manager": "Zaid Saeed",
+      "finishedStockValue": 450000,
+      "todaySales": 24900,
+      "status": "active"
+    }
+  ],
+  "suppliers": [
+    {
+      "id": "sup-1",
+      "code": "SUP-001",
+      "name": "Aroma Essence International",
+      "contact": "Jean-Luc Picard",
+      "phone": "+33 4 93 12 34 56",
+      "email": "orders@aromaessence.fr",
+      "address": "Parc Industriel de Grasse, France",
+      "paymentTerms": "Net 30 Days",
+      "outstanding": 125000,
+      "lastPurchase": "2026-09-20",
+      "status": "active"
+    },
+    {
+      "id": "sup-2",
+      "code": "SUP-002",
+      "name": "Precision Glass & Packaging Co.",
+      "contact": "Harpreet Singh",
+      "phone": "+91 98765 43210",
+      "email": "sales@precisionpack.in",
+      "address": "Industrial Zone 4, Mumbai, India",
+      "paymentTerms": "Net 15 Days",
+      "outstanding": 45000,
+      "lastPurchase": "2026-09-15",
+      "status": "active"
+    },
+    {
+      "id": "sup-3",
+      "code": "SUP-003",
+      "name": "LuxPack Packaging Ltd.",
+      "contact": "Claire Dupont",
+      "phone": "+44 20 7946 0912",
+      "email": "info@luxpack.co.uk",
+      "address": "Logistics Park, London, UK",
+      "paymentTerms": "Immediate / COD",
+      "outstanding": 0,
+      "lastPurchase": "2026-09-08",
+      "status": "active"
+    }
+  ],
+  "rawMaterials": [
+    {
+      "id": "rm-1",
+      "code": "RM-OIL-AVENTUS",
+      "name": "Aventus Perfume Oil",
+      "category": "Perfume Oil",
+      "unit": "ml",
+      "currentCost": 8,
+      "availableStock": 2500,
+      "minStock": 500,
+      "supplierName": "Aroma Essence International",
+      "status": "active"
+    },
+    {
+      "id": "rm-2",
+      "code": "RM-OIL-BACCARAT",
+      "name": "Baccarat Rouge Oil",
+      "category": "Perfume Oil",
+      "unit": "ml",
+      "currentCost": 12.5,
+      "availableStock": 1800,
+      "minStock": 400,
+      "supplierName": "Aroma Essence International",
+      "status": "active"
+    },
+    {
+      "id": "rm-3",
+      "code": "RM-OIL-SAUVAGE",
+      "name": "Sauvage Type Oil",
+      "category": "Perfume Oil",
+      "unit": "ml",
+      "currentCost": 6.5,
+      "availableStock": 3200,
+      "minStock": 600,
+      "supplierName": "Aroma Essence International",
+      "status": "active"
+    },
+    {
+      "id": "rm-4",
+      "code": "RM-OIL-OUD",
+      "name": "Oud Wood Oil",
+      "category": "Perfume Oil",
+      "unit": "ml",
+      "currentCost": 18,
+      "availableStock": 450,
+      "minStock": 500,
+      "supplierName": "Aroma Essence International",
+      "status": "active"
+    },
+    {
+      "id": "rm-5",
+      "code": "RM-SOLVENT-ALC",
+      "name": "Perfume Grade Solvent 99.9%",
+      "category": "Solvent",
+      "unit": "ml",
+      "currentCost": 0.5,
+      "availableStock": 15000,
+      "minStock": 3000,
+      "supplierName": "French Fragrance Supplies",
+      "status": "active"
+    },
+    {
+      "id": "rm-6",
+      "code": "RM-BOTTLE-30",
+      "name": "Glass Bottle 30ml",
+      "category": "Bottle",
+      "unit": "pcs",
+      "currentCost": 15,
+      "availableStock": 450,
+      "minStock": 200,
+      "supplierName": "Precision Glass & Packaging Co.",
+      "status": "active"
+    },
+    {
+      "id": "rm-7",
+      "code": "RM-BOTTLE-50",
+      "name": "Glass Bottle 50ml Luxury",
+      "category": "Bottle",
+      "unit": "pcs",
+      "currentCost": 22,
+      "availableStock": 85,
+      "minStock": 150,
+      "supplierName": "Precision Glass & Packaging Co.",
+      "status": "active"
+    },
+    {
+      "id": "rm-8",
+      "code": "RM-BOTTLE-100",
+      "name": "Glass Bottle 100ml Heavy",
+      "category": "Bottle",
+      "unit": "pcs",
+      "currentCost": 35,
+      "availableStock": 600,
+      "minStock": 200,
+      "supplierName": "Precision Glass & Packaging Co.",
+      "status": "active"
+    },
+    {
+      "id": "rm-9",
+      "code": "RM-PUMP-GOLD",
+      "name": "Crimp Spray Pump Gold",
+      "category": "Pump",
+      "unit": "pcs",
+      "currentCost": 5,
+      "availableStock": 420,
+      "minStock": 500,
+      "supplierName": "Precision Glass & Packaging Co.",
+      "status": "active"
+    },
+    {
+      "id": "rm-10",
+      "code": "RM-CAP-MAGNETIC",
+      "name": "Magnetic Gold Cap",
+      "category": "Cap",
+      "unit": "pcs",
+      "currentCost": 12,
+      "availableStock": 1900,
+      "minStock": 400,
+      "supplierName": "Precision Glass & Packaging Co.",
+      "status": "active"
+    },
+    {
+      "id": "rm-11",
+      "code": "RM-POUCH-VELVET",
+      "name": "Velvet Soft Pouch",
+      "category": "Pouch",
+      "unit": "pcs",
+      "currentCost": 8,
+      "availableStock": 220,
+      "minStock": 300,
+      "supplierName": "LuxPack Packaging Ltd.",
+      "status": "active"
+    },
+    {
+      "id": "rm-12",
+      "code": "RM-BAG-CARRY",
+      "name": "Aromartist Carry Bag",
+      "category": "Carry Bag",
+      "unit": "pcs",
+      "currentCost": 4.5,
+      "availableStock": 3000,
+      "minStock": 500,
+      "supplierName": "LuxPack Packaging Ltd.",
+      "status": "active"
+    },
+    {
+      "id": "rm-13",
+      "code": "RM-LABEL-METALLIC",
+      "name": "Gold Foil Label Set",
+      "category": "Label",
+      "unit": "pcs",
+      "currentCost": 3,
+      "availableStock": 4000,
+      "minStock": 800,
+      "supplierName": "Precision Glass & Packaging Co.",
+      "status": "active"
+    }
+  ],
+  "fragrances": [
+    {
+      "id": "fr-1",
+      "code": "FRAG-AVENTUS",
+      "name": "Aventus Style",
+      "refBrand": "Creed Aventus",
+      "category": "Fresh Woody",
+      "perfumeOilId": "rm-1",
+      "status": "active"
+    },
+    {
+      "id": "fr-2",
+      "code": "FRAG-BACCARAT",
+      "name": "Baccarat Rouge 540",
+      "refBrand": "Maison Francis Kurkdjian",
+      "category": "Amber Floral",
+      "perfumeOilId": "rm-2",
+      "status": "active"
+    },
+    {
+      "id": "fr-3",
+      "code": "FRAG-SAUVAGE",
+      "name": "Sauvage Style",
+      "refBrand": "Dior Sauvage",
+      "category": "Fresh Spicy",
+      "perfumeOilId": "rm-3",
+      "status": "active"
+    },
+    {
+      "id": "fr-4",
+      "code": "FRAG-OUD",
+      "name": "Oud Wood Style",
+      "refBrand": "Tom Ford Oud Wood",
+      "category": "Woody Oriental",
+      "perfumeOilId": "rm-4",
+      "status": "active"
+    }
+  ],
+  "concentrations": [
+    {
+      "id": "conc-1",
+      "code": "EDT",
+      "name": "Eau de Toilette",
+      "oilPercentage": 15,
+      "remainingPercentage": 85,
+      "status": "active"
+    },
+    {
+      "id": "conc-2",
+      "code": "EDP",
+      "name": "Eau de Parfum",
+      "oilPercentage": 20,
+      "remainingPercentage": 80,
+      "status": "active"
+    },
+    {
+      "id": "conc-3",
+      "code": "EXTRAIT",
+      "name": "Extrait de Parfum",
+      "oilPercentage": 30,
+      "remainingPercentage": 70,
+      "status": "active"
+    }
+  ],
+  "bottleSizes": [
+    {
+      "id": "bs-1",
+      "name": "30 ml",
+      "volumeMl": 30,
+      "bottleMaterialRef": "rm-6",
+      "status": "active"
+    },
+    {
+      "id": "bs-2",
+      "name": "50 ml",
+      "volumeMl": 50,
+      "bottleMaterialRef": "rm-7",
+      "status": "active"
+    },
+    {
+      "id": "bs-3",
+      "name": "100 ml",
+      "volumeMl": 100,
+      "bottleMaterialRef": "rm-8",
+      "status": "active"
+    }
+  ],
+  "products": [
+    {
+      "id": "prod-1",
+      "name": "Aventus Style Perfume",
+      "fragranceId": "fr-1",
+      "fragranceName": "Aventus Style",
+      "status": "active",
+      "variantsCount": 3,
+      "finishedStock": 60
+    },
+    {
+      "id": "prod-2",
+      "name": "Baccarat Rouge 540 Style",
+      "fragranceId": "fr-2",
+      "fragranceName": "Baccarat Rouge 540",
+      "status": "active",
+      "variantsCount": 2,
+      "finishedStock": 45
+    }
+  ],
+  "customers": [
+    {
+      "id": "cust-1",
+      "name": "Walk-in Customer",
+      "mobile": "0000000000",
+      "email": "walkin@aromartist.com",
+      "totalPurchases": 154000,
+      "outstanding": 0,
+      "lastPurchase": "2026-09-28"
+    },
+    {
+      "id": "cust-2",
+      "name": "Dr. Sameer Al-Hassan",
+      "mobile": "+91 98112 34567",
+      "email": "dr.sameer@example.com",
+      "totalPurchases": 28900,
+      "outstanding": 0,
+      "lastPurchase": "2026-09-27"
+    },
+    {
+      "id": "cust-3",
+      "name": "Laila Mahmoud",
+      "mobile": "+91 98776 54321",
+      "email": "laila@example.com",
+      "totalPurchases": 45000,
+      "outstanding": 2500,
+      "lastPurchase": "2026-09-26"
+    }
+  ]
+}
