@@ -15,7 +15,7 @@ class Workflows(TestCase):
   self.user=get_user_model().objects.create_user(username='owner',password='Strong-test-238!',organization=self.org,role='owner',branch=self.br,warehouse=self.wh,email='owner@example.com')
   self.api=APIClient();self.api.force_authenticate(self.user)
   self.sup=create(m.Supplier,name='Supplier',code='SUP')
-  self.oil=create(m.Material,name='Oil',code='OIL',category='Perfume Oil',unit='ml',currentCost=8,supplier=self.sup,minStock=20)
+  self.oil=create(m.Material,name='Oil',code='OIL',category='Perfume Oil',unit='ml',currentCost=8,minStock=20)
   self.sol=create(m.Material,name='Solvent',code='SOL',category='Solvent',unit='ml',currentCost=Decimal('.5'));self.bot=create(m.Material,name='Bottle',code='BOT',category='Bottle',unit='pcs',currentCost=22)
   self.fr=create(m.Fragrance,name='Fragrance',code='FR',perfumeOilId=self.oil);self.conc=create(m.Concentration,name='EDP',code='EDP',oilPercentage=20);self.size=create(m.BottleSize,name='50 ml',volumeMl=50,bottleMaterialRef=self.bot)
   self.basis={'fragranceId':self.fr.pk,'concentrationId':self.conc.pk,'bottleSizeId':self.size.pk,'laborCost':10,'cleaningAllocation':2,'otherCost':3}
@@ -31,6 +31,14 @@ class Workflows(TestCase):
  def sale(self,**kw): return self.post('sales/pos/checkout/',{'cart':[{'id':self.v.pk,'qty':2,'sellingPrice':1,'costPrice':0}],'branchId':self.br.pk,'paymentMethod':'Cash',**kw})['invoice']
  def po(self): return self.post('purchases/orders/',{'supplierName':'Supplier','warehouseName':'Warehouse','orderDate':str(date.today()),'expectedDate':str(date.today()),'items':[{'material':'Oil','qty':20,'rate':10,'discount':2,'tax':1}]})
  def batch(self): return self.post('production/batches/',{'productVariantId':self.v.pk,'warehouseId':self.wh.pk,'plannedQty':10,'date':str(date.today()),'unitCost':1})
+ def test_same_material_can_be_purchased_from_two_suppliers(self):
+  first=self.po()
+  m.Supplier.objects.create(organization=self.org,name='Second supplier',code='SUP2')
+  second=self.post('purchases/orders/',{'supplierName':'Second supplier','warehouseName':'Warehouse','orderDate':str(date.today()),'expectedDate':str(date.today()),'items':[{'material':'Oil','qty':5,'rate':12,'discount':0,'tax':0}]})
+  self.assertNotEqual(first['id'],second['id'])
+  data=self.get('inventory/raw-materials/'+self.oil.pk+'/')
+  self.assertNotIn('supplier',data);self.assertNotIn('supplierName',data)
+  self.assertEqual(m.PurchaseLine.objects.filter(material=self.oil).count(),2)
  def test_login_does_not_trust_role(self):
   get_user_model().objects.create_user(username='staff',password='Strong-test-238!',organization=self.org,role='cashier',branch=self.br)
   self.api.force_authenticate(None);d=self.post('auth/login/',{'username':'staff','password':'Strong-test-238!','role':'owner'},200)

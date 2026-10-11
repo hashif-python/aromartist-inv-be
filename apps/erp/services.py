@@ -307,13 +307,15 @@ def checkout(user,data):
         if existing:
             if existing.salesperson_id!=user.pk or existing.branch_id!=loc.pk or existing.checkoutFingerprint!=fingerprint: raise ValidationError('This checkout request key was already used for a different sale.')
             return existing
+    from apps.pos.models import Shift
+    if Shift.objects.filter(cashier=user,register__branch=loc,closed_at=None,closingRequested=True).exists(): raise ValidationError('Register closing is awaiting approval; new sales are blocked.')
     if not cart: raise ValidationError('Cart cannot be empty.')
     customer=None
     if data.get('customerId') and data['customerId']!='cust-walkin': customer=owned(Customer,data['customerId'],user)
     elif data.get('customerMobile') and data['customerMobile']!='0000000000': customer=Customer.objects.filter(organization=user.organization,mobile=data['customerMobile']).first()
     method=data.get('paymentMethod','Cash')
     if method not in ['Cash','Card','Bank','UPI','Credit','Bank Transfer','Split']: raise ValidationError('Unsupported payment method.')
-    inv=Invoice.objects.create(organization=user.organization,invoiceNumber='',branch=loc,customer=customer,customerName=customer.name if customer else 'Walk-in Customer',customerMobile=customer.mobile if customer else '',salesperson=user,date=date.today(),paymentMethod=method,checkoutKey=key,checkoutFingerprint=fingerprint)
+    inv=Invoice.objects.create(organization=user.organization,invoiceNumber='',branch=loc,customer=customer,customerName=customer.name if customer else 'Walk-in Customer',customerMobile=customer.mobile if customer else '',salesperson=user,date=timezone.localdate(),paymentMethod=method,checkoutKey=key,checkoutFingerprint=fingerprint)
     seen=set()
     for r in sorted(cart,key=lambda r:r.get('id','')):
         v=owned(Variant,r.get('id') or r.get('variantId'),user)
@@ -339,12 +341,17 @@ def checkout(user,data):
     if method=='Credit' and not customer: raise ValidationError('A registered customer is required for credit sales.')
     inv.status='Unpaid' if method=='Credit' else 'Paid';inv.save()
     ledger(user,inv.paid,method,'Inflow',inv.invoiceNumber,'POS sale','invoice',inv.pk)
+    from apps.pos.models import Shift,Sale
+    shift=Shift.objects.filter(cashier=user,register__branch=loc,closed_at=None).first()
+    if shift:Sale.objects.get_or_create(invoice=inv,defaults=dict(organization=user.organization,shift=shift,tendered=inv.total))
     return inv
 
 def sales_return(user,data):
     inv=owned(Invoice,data.get('invoiceNumber'),user,'invoiceNumber')
     inv=Invoice.objects.select_for_update().get(pk=inv.pk)
     enforce_location(user,inv.branch)
+    from apps.pos.models import Shift
+    if Shift.objects.filter(cashier=user,register__branch=inv.branch,closed_at=None,closingRequested=True).exists(): raise ValidationError('Register closing is awaiting approval; refunds are blocked.')
     l=inv.lines.select_for_update().filter(sku=data.get('sku')).first()
     if not l: raise ValidationError('The selected SKU is not on this invoice.')
     qty=integer(data.get('qty'))
@@ -357,13 +364,16 @@ def sales_return(user,data):
     # Last partial return clears rounding residual to never refund more than the line.
     prior=SalesReturn.objects.filter(line=l).aggregate(n=Sum('refundAmount'))['n'] or ZERO
     if l.returned+qty==l.qty: refund=l.total-prior
-    ret=SalesReturn.objects.create(organization=user.organization,returnRef='',line=l,date=date.today(),qty=qty,condition=condition,reason=reason,refundMethod=data.get('refundMethod','Cash'),refundAmount=refund)
+    ret=SalesReturn.objects.create(organization=user.organization,returnRef='',line=l,date=timezone.localdate(),qty=qty,condition=condition,reason=reason,refundMethod=data.get('refundMethod','Cash'),refundAmount=refund)
     if condition=='Sellable': post_stock(user,inv.branch,l.variant,Decimal(qty),'SALES_RETURN',ret.returnRef)
     l.returned+=qty;l.save()
     # Credit invoices reduce receivables before issuing a cash refund.
     due=max(ZERO,inv.total-inv.paid-(SalesReturn.objects.filter(line__invoice=inv).exclude(pk=ret.pk).aggregate(n=Sum('refundAmount'))['n'] or ZERO))
     cash_refund=max(ZERO,refund-due)
     ledger(user,cash_refund,ret.refundMethod,'Outflow',ret.returnRef,'Sales refund','sales_return',ret.pk)
+    from apps.pos.models import Shift,Refund
+    shift=Shift.objects.filter(cashier=user,register__branch=inv.branch,closed_at=None).first()
+    if shift:Refund.objects.get_or_create(returned=ret,defaults=dict(organization=user.organization,shift=shift,cashier=user))
     return ret
 
 def adjust(user,data,wastage=False):

@@ -77,7 +77,6 @@ class Material(Master):
     unit=models.CharField(max_length=10,choices=[('ml','ml'),('pcs','pcs'),('g','g'),('kg','kg'),('L','L')],default='ml')
     currentCost=money()
     minStock=money()
-    supplier=relation(Supplier,null=True,blank=True)
     description=models.TextField(blank=True)
     class Meta: constraints=[models.UniqueConstraint(fields=['organization','code'],name='material_code'),models.UniqueConstraint(fields=['organization','name'],name='material_name')]
 

@@ -56,6 +56,8 @@ class Projection(generics.GenericAPIView):
         return Response(svc.json_num(data))
     @transaction.atomic
     def post(self,request):
+        from apps.accounts.models import Organization
+        Organization.objects.select_for_update().get(pk=request.user.organization_id)
         inp=self.get_serializer(data=request.data);inp.is_valid(raise_exception=True);d=inp.validated_data;u=request.user
         if self.mode=='availability':
             v=svc.owned(m.Variant,d.get('variantId'),u);loc=svc.location(u,d.get('warehouseId'),'Warehouse');data=svc.availability(u,v,svc.integer(d.get('quantity')),loc)

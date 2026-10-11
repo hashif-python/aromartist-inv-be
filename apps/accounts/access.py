@@ -6,9 +6,10 @@ RESOURCES={
 HR_RESOURCES=['dashboard','employee','department','designation','attendance','leave_type','leave_balance','leave','salary','salary_revision','payroll_period','payroll','advance','document','shift','shift_assignment','holiday','policy']
 ACTIONS=['manufacture','complete','receive','dispatch','checkout','reverse','view','create','edit','delete','approve','reject','cancel','calculate','pay','disburse','export','download','link_login','check_in','check_out']
 def catalog():
+ from apps.pos.permissions import CODES as POS_CODES
  from .permissions import ROLE_PERMISSIONS
  legacy=sorted({p for rows in ROLE_PERMISSIONS.values() for p in rows if p!='*'})
- return legacy+[f'{resource}.{a}' for resource in RESOURCES for a in ACTIONS]+[f'hrms.{resource}.{a}' for resource in HR_RESOURCES for a in ACTIONS]+['inventory.stock.view','reports.view','access.users.manage','access.roles.manage','access.audit.view','hrms.self_attendance']
+ return POS_CODES+legacy+[f'{resource}.{a}' for resource in RESOURCES for a in ACTIONS]+[f'hrms.{resource}.{a}' for resource in HR_RESOURCES for a in ACTIONS]+['inventory.stock.view','reports.view','access.users.manage','access.roles.manage','access.audit.view','hrms.self_attendance']
 def assigned_permissions(user):
  assignments=list(user.roleAssignments.select_related('role'))
  if assignments:return sorted({p for a in assignments for p in a.role.permissions})

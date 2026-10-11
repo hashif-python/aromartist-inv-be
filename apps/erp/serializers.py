@@ -162,7 +162,6 @@ class MaterialSerializer(TenantSerializer):
                 raise serializers.ValidationError('Unit and category are locked once used in a recipe or stock history. Create a new material for a different unit.')
         return attrs
 
-    supplierName=serializers.CharField(source='supplier.name',read_only=True,default='')
     availableStock=serializers.SerializerMethodField()
     @extend_schema_field(serializers.JSONField())
     def get_availableStock(self,o):

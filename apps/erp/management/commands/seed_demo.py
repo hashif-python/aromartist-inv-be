@@ -28,8 +28,7 @@ class Command(BaseCommand):
    for row in data[key]: create(m.Location,row,kind=kind)
   for row in data['suppliers']: create(m.Supplier,row)
   for row in data['rawMaterials']:
-   sup=m.Supplier.objects.filter(organization=u.organization,name=row.get('supplierName')).first()
-   obj=create(m.Material,row,supplier=sup)
+   obj=create(m.Material,row)
    svc.post_stock(u,refs['wh-1'],obj,Decimal(str(row['availableStock'])),'DEMO_OPENING','DEMO-SEED','Explicit demo opening inventory')
   for row in data['fragrances']: create(m.Fragrance,row,perfumeOilId=refs[row['perfumeOilId']])
   for row in data['concentrations']: create(m.Concentration,row)

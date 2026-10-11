@@ -178,9 +178,7 @@ class MaterialViewSet(TenantViewSet):
     queryset=m.Material.objects.all();serializer_class=s.MaterialSerializer
     read_permissions=['inventory.view','production.view','production.formulation','transfers.view','purchases.view','purchases.bills'];write_permissions=['*','warehouse.manage']
     def perform_create(self,serializer):
-        supplier=None
-        if self.request.data.get('supplierName'): supplier=svc.owned(m.Supplier,self.request.data['supplierName'],self.request.user,'name')
-        serializer.save(organization=self.request.user.organization,**({'supplier':supplier} if supplier else {}))
+        serializer.save(organization=self.request.user.organization)
 class FragranceViewSet(TenantViewSet):
     queryset=m.Fragrance.objects.all();serializer_class=s.FragranceSerializer
     read_permissions=['production.view','production.formulation','inventory.view','sales.pos'];write_permissions=['production.formulation']
