@@ -41,10 +41,10 @@ class Command(BaseCommand):
         packages=[]
         names=['30 ml Glass Perfume Bottle','50 ml Glass Perfume Bottle','100 ml Glass Perfume Bottle','Fine Mist Spray Pump','Gold Perfume Cap','Black Perfume Cap','Perfume Labels','30 ml Carton','50 ml Carton','100 ml Carton']
         for i,name in enumerate(names,1):
-            mat=master(m.Material,{'code':f'PKG{i:02}'},dict(name=name,category='Packaging',unit='pcs',currentCost=Decimal(str([10,12,16,3,2,2,1,4,5,6][i-1])),minStock=50,description='Demonstration data'));packages.append(mat);materials.append(mat)
+            mat=master(m.Material,{'code':f'PKG{i:02}'},dict(packagingType=['Bottle','Bottle','Bottle','Pump','Cap','Cap','Label','Other','Other','Other'][i-1],name=name,category='Packaging',unit='pcs',currentCost=Decimal(str([10,12,16,3,2,2,1,4,5,6][i-1])),minStock=50,description='Demonstration data'));packages.append(mat);materials.append(mat)
         from apps.erp.category_utils import register_existing_categories
         register_existing_categories(org)
-        sizes=[master(m.BottleSize,{'name':f'{volume} ml'},dict(volumeMl=volume,bottleMaterialRef=packages[i])) for i,volume in enumerate([30,50,100])]
+        sizes=[master(m.BottleSize,{'name':f'{volume} ml'},dict(volumeMl=volume,bottleMaterialRef=packages[i],pumpMaterialRef=packages[3],capMaterialRef=packages[4],labelMaterialRef=packages[6])) for i,volume in enumerate([30,50,100])]
         conc=master(m.Concentration,{'code':'EDP'},dict(name='Eau de Parfum',oilPercentage=23,description='Demonstration label; formulation controls actual percentages.'))
         for wh in warehouses[:2]:
             for mat in materials: s.post_stock(user,wh,mat,Decimal(10000 if mat.unit=='ml' else 500),'DEMO_OPENING',marker,'Demonstration opening inventory')

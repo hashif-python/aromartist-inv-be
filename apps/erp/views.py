@@ -136,10 +136,14 @@ class LocationViewSet(TenantViewSet):
             obj=get_object_or_404(m.Location,organization=self.request.user.organization,kind=self.kind,pk=self.kwargs['pk'])
             svc.enforce_location(self.request.user,obj);return obj
         return super().get_object()
-    def perform_create(self,serializer): serializer.save(organization=self.request.user.organization,kind=self.kind)
+    def perform_create(self,serializer):
+        if self.request.user.organization.singleLocationMode:raise ValidationError('Single-location mode already has its default branch and warehouse.')
+        serializer.save(organization=self.request.user.organization,kind=self.kind)
     def perform_update(self,serializer):
+        if self.request.user.organization.singleLocationMode and (serializer.validated_data.get('isVirtual') or serializer.validated_data.get('status')=='inactive'):raise ValidationError('Default locations must remain active and physical.')
         svc.enforce_location(self.request.user,serializer.instance);serializer.save()
     def perform_destroy(self,instance):
+        if self.request.user.organization.singleLocationMode:raise ValidationError('Default store locations cannot be deleted in single-location mode.')
         svc.enforce_location(self.request.user,instance);instance.delete()
     @action(detail=True,methods=['get'])
     def stock(self,request,pk=None):
@@ -175,11 +179,20 @@ class MaterialCategoryViewSet(TenantViewSet):
         obj.materials.update(category=obj.name)
 
 class MaterialViewSet(TenantViewSet):
+    def perform_destroy(self,instance):
+        for product in m.Product.objects.filter(organization=instance.organization,directBlend=True).only('recipe','packagingRecipe'):
+            if any(row.get('materialId')==instance.pk for row in product.recipe+product.packagingRecipe):raise ValidationError('Material is used in a product recipe/packaging set. Set it inactive instead.')
+        super().perform_destroy(instance)
     queryset=m.Material.objects.all();serializer_class=s.MaterialSerializer
     read_permissions=['inventory.view','production.view','production.formulation','transfers.view','purchases.view','purchases.bills'];write_permissions=['*','warehouse.manage']
     def perform_create(self,serializer):
         serializer.save(organization=self.request.user.organization)
 class FragranceViewSet(TenantViewSet):
+    def perform_destroy(self,instance):
+        if isinstance(instance,m.Fragrance):
+            for product in m.Product.objects.filter(organization=instance.organization,directBlend=True).only('recipe'):
+                if any(row.get('fragranceId')==instance.pk for row in product.recipe):raise ValidationError('Fragrance is used in a product formulation. Set it inactive instead.')
+        super().perform_destroy(instance)
     queryset=m.Fragrance.objects.all();serializer_class=s.FragranceSerializer
     read_permissions=['production.view','production.formulation','inventory.view','sales.pos'];write_permissions=['production.formulation']
 class ConcentrationViewSet(FragranceViewSet): queryset=m.Concentration.objects.all();serializer_class=s.ConcentrationSerializer
@@ -188,6 +201,7 @@ class ProductViewSet(TenantViewSet):
     @transaction.atomic
     def destroy(self,request,*args,**kwargs):
         product=self.get_object()
+        if isinstance(product,m.Product) and product.saleLines.exists():raise ValidationError('Product sales history is protected. Set this product inactive instead.')
         variants=[product] if isinstance(product,m.Variant) else list(product.variants.all())
         for v in variants:
             if m.Stock.objects.filter(variant=v).exists() or m.Batch.objects.filter(variant=v).exists() or m.InvoiceLine.objects.filter(variant=v).exists() or m.TransferLine.objects.filter(variant=v).exists(): raise ValidationError('Product inventory or transaction history is protected. Set the product/variant inactive instead.')

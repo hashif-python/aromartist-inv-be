@@ -1,6 +1,7 @@
 import uuid
 from django.db import models
 from django.db.models import Q
+from django.db.models.functions import Lower
 from django.core.validators import MinValueValidator, MaxValueValidator
 from decimal import Decimal
 
@@ -36,6 +37,9 @@ class Master(TenantModel):
     def __str__(self): return self.name
 
 class Location(Master):
+    ownerBranch=relation("self",null=True,blank=True,related_name="branchWarehouses",limit_choices_to={"kind":"Branch"})
+    isVirtual=models.BooleanField(default=False)
+    physicalBranches=models.ManyToManyField("self",symmetrical=False,blank=True,related_name="virtualParents")
     warehouse=relation("self",null=True,blank=True,related_name="linkedBranches",limit_choices_to={"kind":"Warehouse"})
     code=models.CharField(max_length=60)
     kind=models.CharField(max_length=20,choices=[('Warehouse','Warehouse'),('Branch','Branch')])
@@ -43,6 +47,13 @@ class Location(Master):
     manager=models.CharField(max_length=120,blank=True)
     phone=models.CharField(max_length=40,blank=True)
     email=models.EmailField(blank=True)
+    def clean(self):
+        super().clean()
+        from django.core.exceptions import ValidationError
+        if self.ownerBranch_id and (self.kind!='Warehouse' or self.ownerBranch.kind!='Branch' or self.ownerBranch.organization_id!=self.organization_id):raise ValidationError('Warehouse owner must be a branch in the same organization.')
+        if self.organization_id and self.organization.singleLocationMode:
+            default=self.organization.defaultBranch_id if self.kind=='Branch' else self.organization.defaultWarehouse_id
+            if self.pk!=default or self.isVirtual or self.status!='active':raise ValidationError('Single-location mode uses only its active default branch/warehouse.')
     class Meta: constraints=[models.UniqueConstraint(fields=['organization','code'],name='location_code'),models.UniqueConstraint(fields=['organization','name'],name='location_name')]
 
 class Supplier(Master):
@@ -64,12 +75,14 @@ class Customer(Master):
     class Meta: constraints=[models.UniqueConstraint(fields=['organization','mobile'],name='customer_mobile')]
 
 class MaterialCategory(Master):
-    categoryType=models.CharField(max_length=20,choices=[('Perfume Oil','Perfume Oil'),('Solvent','Solvent'),('Packaging','Packaging'),('Other','Other')])
+    categoryType=models.CharField(max_length=20,choices=[('Perfume Oil','Perfume Oil'),('Solvent','Solvent'),('Packaging','Packaging'),('Other','Others')])
     unit=models.CharField(max_length=10,choices=[('ml','ml'),('pcs','pcs'),('g','g'),('kg','kg'),('L','L')])
     description=models.TextField(blank=True)
     class Meta: constraints=[models.UniqueConstraint(fields=['organization','name'],name='material_category_name')]
 
 class Material(Master):
+    fragrancePrices=models.JSONField(default=dict,blank=True)
+    packagingType=models.CharField(max_length=20,blank=True,default="",choices=[("Bottle","Bottle"),("Pump","Pump / Atomizer"),("Cap","Cap"),("Label","Label"),("Dip Tube","Dip Tube"),("Other","Other packaging")])
     compatibleBottleSizes=models.ManyToManyField("BottleSize",blank=True,related_name="compatibleMaterials")
     categoryRef=relation(MaterialCategory,null=True,blank=True,related_name='materials')
     code=models.CharField(max_length=60)
@@ -81,10 +94,11 @@ class Material(Master):
     class Meta: constraints=[models.UniqueConstraint(fields=['organization','code'],name='material_code'),models.UniqueConstraint(fields=['organization','name'],name='material_name')]
 
 class Fragrance(Master):
+    pricesByType=models.JSONField(default=dict,blank=True)
     notes=models.TextField(blank=True)
     code=models.CharField(max_length=60)
     refBrand=models.CharField(max_length=120,blank=True)
-    category=models.CharField(max_length=60,blank=True)
+    category=models.CharField(max_length=160,blank=True)
     perfumeOilId=relation(Material)
     class Meta: constraints=[models.UniqueConstraint(fields=['organization','code'],name='fragrance_code')]
 
@@ -95,6 +109,10 @@ class Concentration(Master):
     class Meta: constraints=[models.UniqueConstraint(fields=['organization','code'],name='concentration_code'),models.CheckConstraint(condition=Q(oilPercentage__gte=0,oilPercentage__lte=100),name='valid_oil_percentage')]
 
 class BottleSize(Master):
+    priceMultiplier=models.DecimalField(max_digits=10,decimal_places=4,null=True,blank=True,validators=[MinValueValidator(Decimal("0.0001"))])
+    priceSurcharge=money()
+    labelMaterialRef=relation(Material,null=True,blank=True,related_name="labelBottleSizes")
+    dipTubeMaterialRef=relation(Material,null=True,blank=True,related_name="dipTubeBottleSizes")
     pumpMaterialRef=relation(Material,null=True,blank=True,related_name="pumpBottleSizes")
     capMaterialRef=relation(Material,null=True,blank=True,related_name="capBottleSizes")
     volumeMl=models.DecimalField(max_digits=10,decimal_places=3,validators=[MinValueValidator(Decimal('0.001'))])
@@ -128,6 +146,17 @@ class FormulaLine(TenantModel):
     class Meta: constraints=[models.UniqueConstraint(fields=['formula','material'],name='formula_material')]
 
 class Product(Master):
+    fragranceType=models.CharField(max_length=20,blank=True,default="",choices=[("PARFUM","Parfum / Extrait"),("EDP","Eau de Parfum"),("EDT","Eau de Toilette"),("EDC","Eau de Cologne"),("EAU_FRAICHE","Eau Fraiche")])
+    pricingMode=models.CharField(max_length=10,default="manual",choices=[("auto","Automatic"),("override","Override"),("manual","Legacy manual")])
+    pricingSnapshot=models.JSONField(default=dict,blank=True)
+    bottleSizeRef=relation(BottleSize,null=True,blank=True,related_name="directProducts")
+    packagingRecipe=models.JSONField(default=list,blank=True)
+    directBlend=models.BooleanField(default=False)
+    fillVolumeMl=money()
+    sellingPrice=money()
+    minSellingPrice=money()
+    recipe=models.JSONField(default=list,blank=True)
+    recipeRevision=models.PositiveIntegerField(default=1)
     code=models.CharField(max_length=60)
     category=models.CharField(max_length=80,blank=True)
     description=models.TextField(blank=True)
@@ -317,7 +346,11 @@ class Invoice(TenantModel):
 
 class InvoiceLine(TenantModel):
     invoice=relation(Invoice,related_name='lines')
-    variant=relation(Variant)
+    variant=relation(Variant,null=True,blank=True)
+    product=relation(Product,null=True,blank=True,related_name="saleLines")
+    recipeSnapshot=models.JSONField(default=list,blank=True)
+    packagingSnapshot=models.JSONField(default=list,blank=True)
+    pricingSnapshot=models.JSONField(default=dict,blank=True)
     productName=models.CharField(max_length=160)
     sku=models.CharField(max_length=80)
     qty=models.PositiveIntegerField()

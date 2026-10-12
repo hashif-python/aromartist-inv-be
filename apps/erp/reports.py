@@ -47,10 +47,10 @@ def build_report(user,filters):
     groups=defaultdict(lambda:{'qty':0,'revenue':svc.ZERO,'cogs':svc.ZERO})
     for l in m.InvoiceLine.objects.filter(invoice__in=invoices).select_related('invoice','variant__concentrationId'):
         refunds=m.SalesReturn.objects.filter(line=l).aggregate(n=Sum('refundAmount'))['n'] or svc.ZERO
-        revenue=l.total-refunds;qty=l.qty-l.returned;cogs=qty*l.costSnapshot
+        revenue=l.total-refunds;qty=l.qty-l.returned;cogs=(l.qty if l.product_id else qty)*l.costSnapshot
         p=products[l.sku];p.update(sku=l.sku,product=l.productName);p['qty']+=qty;p['revenue']+=revenue;p['cogs']+=cogs
         t=trend[str(l.invoice.date)];t['sales']+=revenue;t['profit']+=revenue-cogs
-        g=groups[l.variant.concentrationId.name];g['qty']+=qty;g['revenue']+=revenue;g['cogs']+=cogs
+        g=groups['Custom blends' if l.product_id else l.variant.concentrationId.name];g['qty']+=qty;g['revenue']+=revenue;g['cogs']+=cogs
     performance=[]
     for p in products.values(): p.update(grossProfit=p['revenue']-p['cogs'],margin=f"{(p['revenue']-p['cogs'])/p['revenue']*100:.1f}%" if p['revenue'] else '0.0%');performance.append(p)
     gross=sum(p['revenue'] for p in performance);cogs=sum(p['cogs'] for p in performance);profit=gross-cogs;units=sum(p['qty'] for p in performance)

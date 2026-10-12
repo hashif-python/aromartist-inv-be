@@ -11,3 +11,12 @@ for mode in ['receivables','payables']: urlpatterns.append(path(f'finance/{mode}
 urlpatterns+=router.urls
 
 urlpatterns.insert(0,path('finance/income/<str:pk>/',LedgerViewSet.as_view({'patch':'partial_update','delete':'destroy'}),name='income-detail'))
+
+from .direct_views import PerfumeProducts,BlendWorkspace
+urlpatterns += [path("perfume-products/",PerfumeProducts.as_view()),path("perfume-products/<str:pk>/",PerfumeProducts.as_view()),path("perfume-workspace/",BlendWorkspace.as_view())]
+
+from .direct_views import BlendQuote,BlendStatus
+urlpatterns += [path("perfume-quote/",BlendQuote.as_view()),path("perfume-status/",BlendStatus.as_view())]
+
+from .direct_views import FragrancePricing
+urlpatterns += [path('perfume-pricing/',FragrancePricing.as_view())]

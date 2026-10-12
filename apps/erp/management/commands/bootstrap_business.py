@@ -10,7 +10,10 @@ class Command(BaseCommand):
  def handle(self,*args,**opts):
   try: u=get_user_model().objects.get(username=opts['username'],is_superuser=True)
   except get_user_model().DoesNotExist: raise CommandError('Create this Django superuser first.')
+  from apps.erp.category_utils import ensure_base_categories
   if u.organization_id:
+   ensure_base_categories(u.organization)
    self.stdout.write(f'Already assigned to {u.organization}. No changes.');return
   org,_=Organization.objects.get_or_create(name=opts['name']);u.organization=org;u.role='owner';u.save()
+  ensure_base_categories(org)
   self.stdout.write(self.style.SUCCESS('Organization assignment complete.'))

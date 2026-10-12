@@ -43,6 +43,12 @@ def owned(model,value,user,field='pk'):
     except (model.DoesNotExist,ValueError): raise ValidationError({field:f'{model.__name__} does not exist in your organization.'})
 
 def location(user,value=None,kind=None):
+    org=user.organization
+    if org.singleLocationMode:
+        obj=org.defaultBranch if kind=='Branch' else org.defaultWarehouse
+        if not obj or obj.kind!=('Branch' if kind=='Branch' else 'Warehouse') or obj.status!='active' or obj.organization_id!=org.pk:raise ValidationError('Default store locations are not configured.')
+        if value and str(value) not in {str(obj.pk),obj.name,obj.code}:raise ValidationError('Use the default branch/warehouse in single-location mode.')
+        enforce_location(user,obj);return obj
     if value:
         qs=Location.objects.filter(organization=user.organization)
         obj=qs.filter(Q(pk=value)|Q(name=value)|Q(code=value)).first()
@@ -64,7 +70,12 @@ def scoped_stocks(user):
     qs=scoped_erp(qs,user)
     return qs.select_related('location','material','variant__productId','variant__concentrationId','variant__bottleSizeId')
 
+def stock_location(user,loc=None):
+    return location(user,None,'Warehouse') if user.organization.singleLocationMode else loc
+
 def stock_for(user,loc,item):
+    loc=stock_location(user,loc)
+    if loc.isVirtual:raise ValidationError("Virtual branches cannot own or deduct stock. Select a physical branch.")
     field='material' if isinstance(item,Material) else 'variant'
     # Lock the parent catalog record even if the balance row is being created.
     type(item).objects.select_for_update().get(pk=item.pk)
@@ -174,6 +185,7 @@ def complete_batch(user,b,data):
     return b
 
 def transfer_create(user,data):
+    if user.organization.singleLocationMode:raise ValidationError("Stock transfers are disabled while using one stock warehouse.")
     src=location(user,data.get('sourceName'),data.get('sourceType'))
     # Destination may be any active organization location; receipt requires destination assignment.
     dest=Location.objects.filter(organization=user.organization,name=data.get('destName'),kind=data.get('destType'),status='active').first()
@@ -292,8 +304,10 @@ def create_purchase_return(user,data):
     return r
 
 def checkout(user,data):
-    loc=location(user,data.get('branchId') or data.get('branchName'),'Branch')
+    from .direct_perfume import sale_branch
+    loc=sale_branch(user,data)
     cart=data.get('cart',[])
+    if not isinstance(cart,list) or len(cart)>100 or any(not isinstance(row,dict) for row in cart):raise ValidationError('Invalid cart.')
     key=str(data.get('checkoutKey','')).strip()
     fingerprint=''
     if key:
@@ -301,7 +315,7 @@ def checkout(user,data):
         # Serialize retries from this operator; stock locks still arbitrate other operators.
         from django.contrib.auth import get_user_model
         get_user_model().objects.select_for_update().get(pk=user.pk)
-        relevant={'branch':loc.pk,'customer':data.get('customerId'),'mobile':data.get('customerMobile'),'discount':str(data.get('discount',0)),'method':data.get('paymentMethod','Cash'),'items':[{'id':row.get('id') or row.get('variantId'),'qty':str(row.get('qty')),'discount':str(row.get('discount',0))} for row in cart]}
+        relevant={'branch':loc.pk,'customer':data.get('customerId'),'mobile':data.get('customerMobile'),'discount':str(data.get('discount',0)),'method':data.get('paymentMethod','Cash'),'items':[{'id':row.get('productId') or row.get('id') or row.get('variantId'),'qty':str(row.get('qty')),'recipeRevision':row.get('recipeRevision'),'pricingToken':row.get('pricingToken'),'discount':str(row.get('discount',0))} for row in cart]}
         fingerprint=hashlib.sha256(json.dumps(relevant,sort_keys=True).encode()).hexdigest()
         existing=Invoice.objects.filter(organization=user.organization,checkoutKey=key).first()
         if existing:
@@ -316,8 +330,14 @@ def checkout(user,data):
     method=data.get('paymentMethod','Cash')
     if method not in ['Cash','Card','Bank','UPI','Credit','Bank Transfer','Split']: raise ValidationError('Unsupported payment method.')
     inv=Invoice.objects.create(organization=user.organization,invoiceNumber='',branch=loc,customer=customer,customerName=customer.name if customer else 'Walk-in Customer',customerMobile=customer.mobile if customer else '',salesperson=user,date=timezone.localdate(),paymentMethod=method,checkoutKey=key,checkoutFingerprint=fingerprint)
+    from .direct_perfume import prepare_lines,post_line
+    prepared=prepare_lines(user,loc,cart)
     seen=set()
     for r in sorted(cart,key=lambda r:r.get('id','')):
+        if r.get('productId'):
+            line=post_line(user,loc,inv,r,prepared)
+            inv.subtotal+=line.total
+            continue
         v=owned(Variant,r.get('id') or r.get('variantId'),user)
         v=Variant.objects.select_for_update().get(pk=v.pk)
         if v.status!='active': raise ValidationError('Inactive products cannot be sold.')
@@ -333,9 +353,11 @@ def checkout(user,data):
     if inv.discount>inv.subtotal: raise ValidationError('Order discount exceeds subtotal.')
     for l in inv.lines.select_related('variant'):
         allocated=inv.discount*l.total/inv.subtotal if inv.subtotal else ZERO
-        if (l.total-allocated)/l.qty<l.variant.minSellingPrice: raise ValidationError('Order discount breaches minimum selling price.')
+        if (l.total-allocated)/l.qty<(l.product.minSellingPrice if l.product_id else l.variant.minSellingPrice): raise ValidationError('Order discount breaches minimum selling price.')
         l.total=cash(l.total-allocated);l.save(update_fields=['total'])
     inv.total=cash(inv.subtotal-inv.discount)
+    tendered=D(data.get('tendered',inv.total))
+    if method=='Cash' and tendered<inv.total: raise ValidationError('Cash received is below the invoice total.')
     # Tax is zero in the uploaded POS, never accept a client supplied tax/total.
     inv.paid=ZERO if method=='Credit' else inv.total
     if method=='Credit' and not customer: raise ValidationError('A registered customer is required for credit sales.')
@@ -343,7 +365,7 @@ def checkout(user,data):
     ledger(user,inv.paid,method,'Inflow',inv.invoiceNumber,'POS sale','invoice',inv.pk)
     from apps.pos.models import Shift,Sale
     shift=Shift.objects.filter(cashier=user,register__branch=loc,closed_at=None).first()
-    if shift:Sale.objects.get_or_create(invoice=inv,defaults=dict(organization=user.organization,shift=shift,tendered=inv.total))
+    if shift:Sale.objects.get_or_create(invoice=inv,defaults=dict(organization=user.organization,shift=shift,tendered=tendered))
     return inv
 
 def sales_return(user,data):
@@ -365,7 +387,7 @@ def sales_return(user,data):
     prior=SalesReturn.objects.filter(line=l).aggregate(n=Sum('refundAmount'))['n'] or ZERO
     if l.returned+qty==l.qty: refund=l.total-prior
     ret=SalesReturn.objects.create(organization=user.organization,returnRef='',line=l,date=timezone.localdate(),qty=qty,condition=condition,reason=reason,refundMethod=data.get('refundMethod','Cash'),refundAmount=refund)
-    if condition=='Sellable': post_stock(user,inv.branch,l.variant,Decimal(qty),'SALES_RETURN',ret.returnRef)
+    if condition=='Sellable' and not l.product_id: post_stock(user,inv.branch,l.variant,Decimal(qty),'SALES_RETURN',ret.returnRef)
     l.returned+=qty;l.save()
     # Credit invoices reduce receivables before issuing a cash refund.
     due=max(ZERO,inv.total-inv.paid-(SalesReturn.objects.filter(line__invoice=inv).exclude(pk=ret.pk).aggregate(n=Sum('refundAmount'))['n'] or ZERO))

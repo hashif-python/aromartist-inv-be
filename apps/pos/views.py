@@ -37,6 +37,7 @@ def branches(user):
     finally:permission_context.reset(token)
 
 def branch(user,identifier):
+    if user.organization.singleLocationMode:identifier=identifier or user.organization.defaultBranch_id
     item=branches(user).filter(pk=identifier).first()
     if not item:raise PermissionDenied('Branch is outside your authorized scope.')
     return item
@@ -50,7 +51,7 @@ def receipt(inv):
     tendered=sale.tendered if sale else inv.paid
     # Deliberately excludes formulation/cost snapshots and sensitive customer notes.
     returns=list(e.SalesReturn.objects.filter(line__invoice=inv).values('returnRef','qty','refundAmount','condition','reason','created_at','line__sku'))
-    return dict(id=inv.pk,invoiceNumber=inv.invoiceNumber,branchId=inv.branch_id,branchName=inv.branch.name,business=inv.organization.name,tendered=tendered,change=max(Decimal("0"),tendered-inv.paid) if inv.paymentMethod=="Cash" else Decimal("0"),customerName=inv.customerName,customerMobile=inv.customerMobile,cashier=inv.salesperson.first_name or inv.salesperson.username,date=inv.date,createdAt=inv.created_at,status=inv.status,paymentMethod=inv.paymentMethod,subtotal=inv.subtotal,discount=inv.discount,tax=inv.tax,total=inv.total,paid=inv.paid,stockPosted=True,returns=returns,lines=[dict(id=l.pk,variantId=l.variant_id,name=l.productName,sku=l.sku,qty=l.qty,rate=l.rate,discount=l.discount,total=l.total,returned=l.returned) for l in inv.lines.all()])
+    return dict(id=inv.pk,invoiceNumber=inv.invoiceNumber,branchId=inv.branch_id,branchName=inv.branch.name,business=inv.organization.name,tendered=tendered,change=max(Decimal("0"),tendered-inv.paid) if inv.paymentMethod=="Cash" else Decimal("0"),customerName=inv.customerName,customerMobile=inv.customerMobile,cashier=inv.salesperson.first_name or inv.salesperson.username,date=inv.date,createdAt=inv.created_at,status=inv.status,paymentMethod=inv.paymentMethod,subtotal=inv.subtotal,discount=inv.discount,tax=inv.tax,total=inv.total,paid=inv.paid,stockPosted=True,returns=returns,lines=[dict(id=l.pk,variantId=l.variant_id or l.product_id,name=l.productName,sku=l.sku,qty=l.qty,rate=l.rate,discount=l.discount,total=l.total,returned=l.returned) for l in inv.lines.all()])
 
 def shift_summary(shift):
     inv=e.Invoice.objects.filter(pos_sale__shift=shift)
@@ -101,7 +102,7 @@ class Mobile(APIView):
             if search:qs=qs.filter(Q(productId__name__icontains=search)|Q(sku__icontains=search)|Q(barcode__icontains=search)|Q(productId__fragranceId__name__icontains=search)|Q(bottleSizeId__name__icontains=search))
             if request.query_params.get('ids'):qs=qs.filter(pk__in=request.query_params['ids'].split(',')[:100])
             if request.query_params.get('category'):qs=qs.filter(productId__category=request.query_params['category'])
-            stocks=dict(e.Stock.objects.filter(location=b,variant__isnull=False).values_list('variant_id','quantity'))
+            stocks=dict(e.Stock.objects.filter(location=s.stock_location(u,b),variant__isnull=False).values_list('variant_id','quantity'))
             rows=[dict(id=v.pk,name=v.productId.name,fragrance=v.productId.fragranceId.name if v.productId.fragranceId else '',sku=v.sku,barcode=v.barcode,bottleSize=v.bottleSizeId.name,concentration=v.concentrationId.name,category=v.productId.category,price=v.sellingPrice,available=stocks.get(v.pk,0),location=b.name) for v in qs.order_by('productId__name','sku')[:200]]
             return Response(s.json_num(rows))
         if section in ['orders','today','receipt','status']:

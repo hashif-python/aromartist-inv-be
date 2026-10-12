@@ -2,6 +2,9 @@ from django.contrib.auth.models import AbstractUser
 from django.db import models
 
 class Organization(models.Model):
+    singleLocationMode=models.BooleanField(default=False)
+    defaultBranch=models.ForeignKey("erp.Location",on_delete=models.SET_NULL,null=True,blank=True,related_name="defaultBranchOrganizations")
+    defaultWarehouse=models.ForeignKey("erp.Location",on_delete=models.SET_NULL,null=True,blank=True,related_name="defaultWarehouseOrganizations")
     name=models.CharField(max_length=160)
     created_at=models.DateTimeField(auto_now_add=True)
     def __str__(self): return self.name

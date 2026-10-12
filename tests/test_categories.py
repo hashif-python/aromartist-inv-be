@@ -9,7 +9,7 @@ class CategoryTests(TestCase):
  def category(self,**kw):return self.api.post('/api/v1/inventory/categories/',{'name':'Custom Packaging','categoryType':'Packaging','unit':'pcs','description':'Cartons and caps',**kw},format='json')
  def test_crud_and_protected_usage(self):
   r=self.category();self.assertEqual(r.status_code,201,r.data);pk=r.data['id'];self.assertEqual(self.api.get(f'/api/v1/inventory/categories/{pk}/').status_code,200)
-  r=self.api.post('/api/v1/inventory/raw-materials/',{'code':'CUSTOM','name':'Custom Cap','categoryRef':pk,'currentCost':5,'minStock':10},format='json');self.assertEqual(r.status_code,201,r.data);self.assertEqual(r.data['unit'],'pcs');self.assertEqual(r.data['categoryType'],'Packaging')
+  r=self.api.post('/api/v1/inventory/raw-materials/',{'code':'CUSTOM','name':'Custom Cap','packagingType':'Cap','categoryRef':pk,'currentCost':5,'minStock':10},format='json');self.assertEqual(r.status_code,201,r.data);self.assertEqual(r.data['unit'],'pcs');self.assertEqual(r.data['categoryType'],'Packaging')
   self.assertEqual(self.api.patch(f'/api/v1/inventory/categories/{pk}/',{'name':'Renamed Packaging'},format='json').status_code,200);self.assertEqual(m.Material.objects.get(pk=r.data['id']).category,'Renamed Packaging')
   self.assertEqual(self.api.patch(f'/api/v1/inventory/categories/{pk}/',{'unit':'g'},format='json').status_code,400);self.assertEqual(self.api.delete(f'/api/v1/inventory/categories/{pk}/').status_code,409)
   unused=self.category(name='Unused');self.assertEqual(self.api.delete(f"/api/v1/inventory/categories/{unused.data['id']}/").status_code,204)

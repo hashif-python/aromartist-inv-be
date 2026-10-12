@@ -4,7 +4,7 @@ from django.db.models import Sum, Q
 from rest_framework import serializers
 from . import models as m
 from .services import ZERO, json_num, cash
-from .category_utils import material_type
+from .category_utils import material_type,packaging_type
 
 class TenantSerializer(serializers.ModelSerializer):
     """Tenant-scoped FK validation applies even to PUT/PATCH and nested masters."""
@@ -19,6 +19,14 @@ class TenantSerializer(serializers.ModelSerializer):
             if isinstance(field,serializers.ManyRelatedField): field=field.child_relation
             if isinstance(field,serializers.PrimaryKeyRelatedField) and field.queryset is not None and hasattr(field.queryset.model,'organization'):
                 field.queryset=field.queryset.filter(organization_id=user.organization_id) if user and getattr(user,'organization_id',None) else field.queryset.none()
+        if user and getattr(user,'organization_id',None) and user.organization.singleLocationMode:
+            org=user.organization
+            for name,field in fields.items():
+                model_field=self.Meta.model._meta.get_field(name) if name in {f.name for f in self.Meta.model._meta.fields} else None
+                if self.Meta.model is m.Location and ((name=='warehouse' and getattr(self.context.get('view'),'kind',getattr(self.instance,'kind',None))!='Branch') or (name=='ownerBranch' and getattr(self.context.get('view'),'kind',getattr(self.instance,'kind',None))!='Warehouse')):continue
+                if model_field and isinstance(model_field,m.models.ForeignKey) and model_field.related_model is m.Location:
+                    target=org.defaultBranch if 'branch' in name.lower() else org.defaultWarehouse
+                    if target:field.required=False;field.default=target
         return fields
     def validate(self,attrs):
         for k,v in attrs.items():
@@ -35,7 +43,13 @@ class LocationSerializer(TenantSerializer):
         warehouse=attrs.get('warehouse',getattr(self.instance,'warehouse',None))
         if warehouse and (kind!='Branch' or warehouse.kind!='Warehouse' or warehouse.status!='active'):
             raise serializers.ValidationError({'warehouse':'Select an active warehouse for this branch.'})
-        if kind=='Branch' and not warehouse and (not self.instance or 'warehouse' in attrs):
+        virtual=attrs.get('isVirtual',getattr(self.instance,'isVirtual',False))
+        targets=attrs.get('physicalBranches',list(self.instance.physicalBranches.all()) if self.instance else [])
+        if virtual and kind!='Branch':raise serializers.ValidationError('Only branches can be virtual.')
+        if any(t.kind!='Branch' or t.isVirtual or t.status!='active' or (self.instance and t.pk==self.instance.pk) for t in targets):raise serializers.ValidationError('Choose distinct active physical branches.')
+        if virtual and not targets:raise serializers.ValidationError('Select the physical branches for this virtual branch.')
+        if virtual and self.instance and m.Stock.objects.filter(location=self.instance).exists():raise serializers.ValidationError('A location with existing stock cannot become virtual.')
+        if kind=='Branch' and not virtual and not warehouse and (not self.instance or 'warehouse' in attrs):
             raise serializers.ValidationError({'warehouse':'Select the branch warehouse.'})
         return attrs
     rawMaterialValue=serializers.SerializerMethodField()
@@ -95,6 +109,7 @@ class MaterialCategorySerializer(TenantSerializer):
     def validate(self,attrs):
         attrs=super().validate(attrs)
         kind=attrs.get('categoryType',getattr(self.instance,'categoryType',None));unit=attrs.get('unit',getattr(self.instance,'unit',None))
+        if kind=='Packaging' and unit!='pcs':raise serializers.ValidationError('Packaging categories must use pcs.')
         if kind in {'Perfume Oil','Solvent'} and unit!='ml': raise serializers.ValidationError('Oil and solvent recipe categories must use ml.')
         if self.instance and self.instance.materials.exists() and any(k in attrs and attrs[k]!=getattr(self.instance,k) for k in ['categoryType','unit']): raise serializers.ValidationError('Category type and unit are locked while materials reference it. Create a new category.')
         return attrs
@@ -122,10 +137,13 @@ class MaterialSerializer(TenantSerializer):
     categoryType=serializers.SerializerMethodField()
     @extend_schema_field(serializers.CharField())
     def get_categoryType(self,o):
-        from .category_utils import material_type
+        from .category_utils import material_type,packaging_type
         return material_type(o)
     def validate(self,attrs):
         attrs=super().validate(attrs)
+        if 'fragrancePrices' in attrs:
+            from .pricing import prices
+            attrs['fragrancePrices']=prices(attrs['fragrancePrices'])
         from .category_utils import LEGACY_TYPES
         user=self.context['request'].user
         if 'openingStocks' in attrs:
@@ -141,6 +159,7 @@ class MaterialSerializer(TenantSerializer):
             category=m.MaterialCategory.objects.filter(organization=user.organization,name=attrs['category']).first()
             if not category and attrs['category'] in LEGACY_TYPES:
                 category,_=m.MaterialCategory.objects.get_or_create(organization=user.organization,name=attrs['category'],defaults={'categoryType':LEGACY_TYPES[attrs['category']],'unit':attrs.get('unit','ml' if attrs['category'] in ['Perfume Oil','Solvent'] else 'pcs')})
+        if attrs.get('fragrancePrices') and category and category.categoryType!='Perfume Oil':raise serializers.ValidationError('Fragrance selling prices apply only to oil materials.')
         if not category: raise serializers.ValidationError({'categoryRef':'Select a registered category.'})
         if category.unit=='pcs' and any(row['quantity'] != row['quantity'].to_integral_value() for row in attrs.get('openingStocks',[])):
             raise serializers.ValidationError({'openingStocks':'Piece quantities must be whole numbers.'})
@@ -154,8 +173,23 @@ class MaterialSerializer(TenantSerializer):
             if self.instance and sizes:
                 allowed={size.pk for size in sizes}
                 used=set(m.VariantPackaging.objects.filter(material=self.instance).values_list('variant__bottleSizeId',flat=True))
-                used.update(m.BottleSize.objects.filter(Q(bottleMaterialRef=self.instance)|Q(pumpMaterialRef=self.instance)|Q(capMaterialRef=self.instance)).values_list('pk',flat=True))
+                used.update(m.BottleSize.objects.filter(Q(bottleMaterialRef=self.instance)|Q(pumpMaterialRef=self.instance)|Q(capMaterialRef=self.instance)|Q(dipTubeMaterialRef=self.instance)|Q(labelMaterialRef=self.instance)).values_list('pk',flat=True))
                 if not used.issubset(allowed): raise serializers.ValidationError({'compatibleBottleSizes':'Include every bottle size already using this material, or leave empty for all sizes.'})
+        legacy=attrs.get('category','')
+        subtype=attrs.get('packagingType',getattr(self.instance,'packagingType','') if self.instance else legacy if legacy in {'Bottle','Pump','Cap','Label','Dip Tube'} else '')
+        if category.categoryType=='Packaging':
+            if not subtype and (not self.instance or 'packagingType' in attrs or (self.instance and self.instance.categoryRef_id!=category.pk)):raise serializers.ValidationError({'packagingType':'Select Bottle, Pump, Cap, Label, Dip Tube or Other packaging.'})
+            if category.unit!='pcs':raise serializers.ValidationError('Packaging categories must use pcs.')
+        elif subtype:raise serializers.ValidationError({'packagingType':'Packaging subtype applies only to Packaging materials.'})
+        if self.instance and subtype!=self.instance.packagingType:
+            for saved_product in m.Product.objects.filter(organization=user.organization,directBlend=True).exclude(packagingRecipe=[]).only('packagingRecipe'):
+                for component in saved_product.packagingRecipe:
+                    expected={'Pump / atomizer':'Pump','Dip tube':'Dip Tube'}.get(component['role'],component['role'])
+                    if component['materialId']==self.instance.pk and subtype!=expected:raise serializers.ValidationError({'packagingType':f'This material is saved as {expected} in a product packaging set.'})
+            fields=['bottleMaterialRef','pumpMaterialRef','capMaterialRef','labelMaterialRef','dipTubeMaterialRef'];roles=['Bottle','Pump','Cap','Label','Dip Tube']
+            for field,role in zip(fields,roles):
+                if m.BottleSize.objects.filter(**{field:self.instance}).exists() and subtype!=role:raise serializers.ValidationError({'packagingType':f'This material is linked as {role} in Bottle Setup.'})
+        if subtype:attrs['packagingType']=subtype
         attrs.update(categoryRef=category,category=category.name,unit=category.unit)
         if self.instance and any(k in attrs and attrs[k]!=getattr(self.instance,k) for k in ['unit','categoryRef']):
             if m.Movement.objects.filter(stock__material=self.instance).exists() or m.FormulaLine.objects.filter(material=self.instance).exists() or m.PercentageIngredient.objects.filter(material=self.instance).exists() or m.VariantPackaging.objects.filter(material=self.instance).exists():
@@ -174,6 +208,9 @@ class MaterialSerializer(TenantSerializer):
 
 class FragranceSerializer(TenantSerializer):
     def validate(self,attrs):
+        if 'pricesByType' in attrs:
+            from .pricing import prices
+            attrs['pricesByType']=prices(attrs['pricesByType'])
         attrs=super().validate(attrs)
         oil=attrs.get("perfumeOilId",getattr(self.instance,"perfumeOilId",None))
         if oil and (material_type(oil)!="Perfume Oil" or oil.unit!="ml" or oil.status!="active"): raise serializers.ValidationError("Choose an active Perfume Oil material measured in ml.")
@@ -187,13 +224,16 @@ class ConcentrationSerializer(TenantSerializer):
 class BottleSizeSerializer(TenantSerializer):
     def validate(self,attrs):
         attrs=super().validate(attrs)
-        if self.instance and m.Variant.objects.filter(bottleSizeId=self.instance).exists() and any(k in attrs and attrs[k]!=getattr(self.instance,k) for k in ['volumeMl','bottleMaterialRef']): raise serializers.ValidationError('Bottle capacity/reference is in use. Create a new bottle size.')
+        if self.instance and (m.Variant.objects.filter(bottleSizeId=self.instance).exists() or m.Product.objects.filter(bottleSizeRef=self.instance).exists()) and any(k in attrs and attrs[k]!=getattr(self.instance,k) for k in ['volumeMl','bottleMaterialRef']): raise serializers.ValidationError('Bottle capacity/reference is in use. Create a new bottle size.')
         refs=[]
-        for field in ['bottleMaterialRef','pumpMaterialRef','capMaterialRef']:
+        for field in ['bottleMaterialRef','pumpMaterialRef','capMaterialRef','labelMaterialRef','dipTubeMaterialRef']:
             item=attrs.get(field,getattr(self.instance,field,None))
             if not item: continue
             if material_type(item)!='Packaging' or item.unit!='pcs' or item.status!='active': raise serializers.ValidationError({field:'Select active packaging measured in pcs.'})
-            if item.pk in refs: raise serializers.ValidationError('Bottle, pump and cap must be distinct materials.')
+            role={'bottleMaterialRef':'Bottle','pumpMaterialRef':'Pump','capMaterialRef':'Cap','labelMaterialRef':'Label','dipTubeMaterialRef':'Dip Tube'}[field]
+            unchanged=self.instance and getattr(self.instance,field+'_id')==item.pk
+            if packaging_type(item)!=role and not (unchanged and not packaging_type(item)):raise serializers.ValidationError({field:f'Select a {role} packaging material.'})
+            if item.pk in refs: raise serializers.ValidationError('Bottle, pump, cap and separately stocked dip tube must be distinct materials.')
             refs.append(item.pk)
             if item.compatibleBottleSizes.exists() and (not self.instance or not item.compatibleBottleSizes.filter(pk=self.instance.pk).exists()): raise serializers.ValidationError({field:'Material is not compatible with this bottle size. Save the size first, then assign compatible materials.'})
         mat=attrs.get('bottleMaterialRef',getattr(self.instance,'bottleMaterialRef',None))
@@ -226,7 +266,9 @@ class ProductSerializer(TenantSerializer):
     def get_finishedStock(self,o):
         from .services import scoped_stocks
         return scoped_stocks(self.context['request'].user).filter(variant__productId=o).aggregate(n=Sum('quantity'))['n'] or ZERO
-    class Meta(TenantSerializer.Meta): model=m.Product
+    class Meta(TenantSerializer.Meta):
+        model=m.Product
+        read_only_fields=['fragranceType','pricingMode','pricingSnapshot','bottleSizeRef','packagingRecipe','directBlend','fillVolumeMl','sellingPrice','minSellingPrice','recipe','recipeRevision']
 
 class VariantSerializer(TenantSerializer):
     percentageRecipe=serializers.BooleanField(source="formulaId.percentageRecipe",read_only=True)
@@ -383,7 +425,7 @@ class InvoiceSerializer(TenantSerializer):
     items=serializers.SerializerMethodField()
     balance=serializers.SerializerMethodField()
     @extend_schema_field(serializers.JSONField())
-    def get_items(self,o): return [{'id':l.pk,'productName':l.productName,'sku':l.sku,'qty':l.qty,'rate':l.rate,'discount':l.discount,'total':l.total,'costSnapshot':l.costSnapshot,'returnedQty':l.returned} for l in o.lines.all()]
+    def get_items(self,o): return [{'id':l.pk,'productName':l.productName,'sku':l.sku,'qty':l.qty,'rate':l.rate,'discount':l.discount,'total':l.total,'costSnapshot':l.costSnapshot,'returnedQty':l.returned,'productId':l.product_id,'recipeSnapshot':l.recipeSnapshot,'packagingSnapshot':l.packagingSnapshot,'pricingSnapshot':l.pricingSnapshot} for l in o.lines.all()]
     @extend_schema_field(serializers.JSONField())
     def get_balance(self,o): return max(ZERO,o.total-o.paid-(m.SalesReturn.objects.filter(line__invoice=o).aggregate(n=Sum('refundAmount'))['n'] or ZERO))
     class Meta(TenantSerializer.Meta): model=m.Invoice;read_only_fields=['checkoutKey','checkoutFingerprint']

@@ -48,6 +48,10 @@ def _provision_user(request,data,employee=None,existing=None):
  roles=list(Role.objects.filter(organization=actor.organization,pk__in=role_ids))
  if len(roles)!=len(set(role_ids)):raise ValidationError('Choose roles in your organization.')
  for role in roles:grantable(actor,role)
+ if actor.organization.singleLocationMode:
+  default=actor.organization.defaultBranch_id
+  if data.get('branches') and set(data['branches'])!={default}:raise ValidationError('Use the default branch in single-location mode.')
+  data={**data,'branches':[default]}
  branches=list(check_branches(actor,data.get('branches',[])))
  if any(role.scope=='branches' for role in roles) and not branches:raise ValidationError('Assign branches for branch-scoped access.')
  if employee and employee.organization_id!=actor.organization_id:raise ValidationError('Employee is outside your organization.')

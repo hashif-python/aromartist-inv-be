@@ -29,6 +29,7 @@ def scope(user):
  if scopes:return next((s for s in ['organization','branches','team','own'] if s in scopes),'own')
  return 'organization' if user.role in ['owner','accountant'] else 'branches'
 def location_ids(user):
+ if user.organization_id and user.organization.singleLocationMode:return {i for i in [user.organization.defaultBranch_id,user.organization.defaultWarehouse_id] if i}
  ids=set(user.branchAssignments.values_list('branch_id',flat=True));ids.update(i for i in [user.branch_id,user.warehouse_id] if i)
  from apps.erp.models import Location
  ids.update(Location.objects.filter(pk__in=ids,kind='Branch').exclude(warehouse=None).values_list('warehouse_id',flat=True))

@@ -19,13 +19,19 @@ class ProfileSerializer(serializers.ModelSerializer):
     def get_permissions(self,o):
         from .access import effective_permissions
         return effective_permissions(o)
+    storeSetup=serializers.SerializerMethodField()
+    @extend_schema_field(serializers.JSONField())
+    def get_storeSetup(self,o):
+        if not o.organization_id:return {'singleLocationMode':False}
+        org=o.organization
+        return dict(singleLocationMode=org.singleLocationMode,branchId=org.defaultBranch_id,branchName=org.defaultBranch.name if org.defaultBranch_id else '',warehouseId=org.defaultWarehouse_id,warehouseName=org.defaultWarehouse.name if org.defaultWarehouse_id else '')
     accessScope=serializers.SerializerMethodField()
     def get_accessScope(self,o):
         from .access import scope
         return scope(o)
     class Meta:
         model=get_user_model()
-        fields=['id','username','name','email','phone','bio','role','permissions','accessScope','organization','branch','warehouse','branchId','warehouseId']
+        fields=['id','username','name','email','phone','bio','role','permissions','accessScope','organization','branch','warehouse','branchId','warehouseId','storeSetup']
         read_only_fields=['id','username','role']
 class LoginSerializer(serializers.Serializer):
     username=serializers.CharField()

@@ -31,7 +31,7 @@ class BottleCompatibilityTests(TestCase):
   r=self.api.patch(f'/api/v1/inventory/raw-materials/{self.cap.pk}/',{'compatibleBottleSizes':[self.other.pk]},format='json');self.assertEqual(r.status_code,400,r.data)
   r=self.api.patch(f'/api/v1/inventory/raw-materials/{self.cap.pk}/',{'compatibleBottleSizes':[self.size.pk]},format='json');self.assertEqual(r.status_code,200,r.data)
  def test_raw_material_create_edit_and_tenant_scope(self):
-  data=dict(name='Size pump',code='SIZEPUMP',categoryRef=self.cat.pk,compatibleBottleSizes=[self.size.pk,self.other.pk])
+  data=dict(packagingType='Pump',name='Size pump',code='SIZEPUMP',categoryRef=self.cat.pk,compatibleBottleSizes=[self.size.pk,self.other.pk])
   r=self.api.post('/api/v1/inventory/raw-materials/',data,format='json');self.assertEqual(r.status_code,201,r.data);self.assertEqual(set(r.data['compatibleBottleSizes']),{str(self.size.pk),str(self.other.pk)})
   foreign=Organization.objects.create(name='Foreign sizes');b=m.Material.objects.create(organization=foreign,name='Bottle',code='B',category='Bottle',unit='pcs');size=m.BottleSize.objects.create(organization=foreign,name='Foreign',volumeMl=100,bottleMaterialRef=b)
   self.assertEqual(self.api.patch(f"/api/v1/inventory/raw-materials/{r.data['id']}/",{'compatibleBottleSizes':[size.pk]},format='json').status_code,400)
