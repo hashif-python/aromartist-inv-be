@@ -1,6 +1,7 @@
 """Read projections derived entirely from posted records and location balances."""
 from collections import defaultdict
 from datetime import timedelta
+from decimal import Decimal, InvalidOperation
 from django.utils.timezone import localdate
 from django.db.models import Sum
 from . import models as m, services as svc, serializers as s
@@ -8,15 +9,50 @@ from .category_utils import material_type
 from apps.accounts.permissions import has
 from apps.accounts.access import scoped_erp,effective_permissions
 
+def _recipe_minimums(user):
+    """Minimum stock needed to make one unit of each configured direct-blend product.
+
+    Keep the largest per-product requirement for each ingredient, not the sum:
+    the alert indicates whether *any* product recipe is blocked by stock.
+    """
+    required = {}
+    products = m.Product.objects.filter(organization=user.organization, directBlend=True)
+    for product in products:
+        try:
+            volume = Decimal(str(product.fillVolumeMl))
+        except (InvalidOperation, TypeError, ValueError):
+            continue
+        for row in product.recipe or []:
+            try:
+                material_id = str(row['materialId'])
+                qty = volume * Decimal(str(row['percentage'])) / Decimal('100')
+                if qty > 0:
+                    required[material_id] = max(required.get(material_id, Decimal('0')), qty)
+            except (KeyError, TypeError, InvalidOperation, ValueError):
+                continue
+        for row in product.packagingRecipe or []:
+            try:
+                material_id = str(row['materialId'])
+                qty = Decimal(str(row['quantity']))
+                if qty > 0:
+                    required[material_id] = max(required.get(material_id, Decimal('0')), qty)
+            except (KeyError, TypeError, InvalidOperation, ValueError):
+                continue
+    return required
+
+
 def stock_rows(user):
+    recipe_minimums = _recipe_minimums(user)
     rows=[]
     for stock in svc.scoped_stocks(user):
         item=stock.material or stock.variant
         cost=item.currentCost if stock.material_id else item.costPrice
-        threshold=item.minStock if stock.material_id or item.formulaId.percentageRecipe else 10
+        configured_min = item.minStock if stock.material_id or item.formulaId.percentageRecipe else 10
+        recipe_min = recipe_minimums.get(str(item.pk), Decimal('0')) if stock.material_id else Decimal('0')
+        threshold = max(configured_min, recipe_min)
         mov=stock.movements.all()
         incoming=sum(x.delta for x in mov if x.delta>0);outgoing=sum(-x.delta for x in mov if x.delta<0)
-        rows.append({'id':stock.pk,'itemId':item.pk,'code':item.code if stock.material_id else item.sku,'name':item.name,'category':item.category if stock.material_id else item.concentrationId.code,'categoryType':material_type(item) if stock.material_id else '', 'itemType':'Raw Material' if stock.material_id else 'Finished Product','type':'Raw Material' if stock.material_id else 'Finished Goods','location':stock.location.name,'locationType':stock.location.kind,'opening':stock.quantity-incoming+outgoing,'incoming':incoming,'outgoing':outgoing,'available':stock.quantity,'stock':f'{stock.quantity} {item.unit if stock.material_id else "pcs"}','unit':item.unit if stock.material_id else 'pcs','unitCost':cost,'value':stock.quantity*cost,'totalValue':stock.quantity*cost,'minStock':threshold,'stockStatus':'Out of Stock' if stock.quantity==0 else 'Low Stock' if stock.quantity<=threshold else 'Optimal'})
+        rows.append({'id':stock.pk,'itemId':item.pk,'code':item.code if stock.material_id else item.sku,'name':item.name,'category':item.category if stock.material_id else item.concentrationId.code,'categoryType':material_type(item) if stock.material_id else '', 'itemType':'Raw Material' if stock.material_id else 'Finished Product','type':'Raw Material' if stock.material_id else 'Finished Goods','location':stock.location.name,'locationType':stock.location.kind,'opening':stock.quantity-incoming+outgoing,'incoming':incoming,'outgoing':outgoing,'available':stock.quantity,'stock':f'{stock.quantity} {item.unit if stock.material_id else "pcs"}','unit':item.unit if stock.material_id else 'pcs','unitCost':cost,'value':stock.quantity*cost,'totalValue':stock.quantity*cost,'minStock':threshold,'configuredMinStock':configured_min,'recipeMinStock':recipe_min,'stockStatus':'Out of Stock' if stock.quantity==0 else 'Low Stock' if stock.quantity<=threshold else 'Optimal'})
     return rows
 
 def invoice_scope(user):

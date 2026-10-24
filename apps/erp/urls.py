@@ -20,3 +20,9 @@ urlpatterns += [path("perfume-quote/",BlendQuote.as_view()),path("perfume-status
 
 from .direct_views import FragrancePricing
 urlpatterns += [path('perfume-pricing/',FragrancePricing.as_view())]
+
+from .whatsapp_views import WhatsAppAPI, WhatsAppInvoiceAPI
+urlpatterns += [
+    path('integrations/whatsapp/<str:action>/',WhatsAppAPI.as_view()),
+    path('sales/invoices/<str:pk>/whatsapp/<str:action>/',WhatsAppInvoiceAPI.as_view()),
+]

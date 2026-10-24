@@ -42,7 +42,7 @@ def recipe(user,rows):
 
 @transaction.atomic
 def save_product(user,data,instance=None):
-    permit(user,'inventory.product.edit') if instance else permit(user,'inventory.product.create','sales.invoice.checkout','sales.pos')
+    permit(user,'inventory.product.edit') if instance else permit(user,'inventory.product.create')
     from apps.accounts.models import Organization
     Organization.objects.select_for_update().get(pk=user.organization_id)
     if instance:

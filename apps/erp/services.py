@@ -324,12 +324,17 @@ def checkout(user,data):
     from apps.pos.models import Shift
     if Shift.objects.filter(cashier=user,register__branch=loc,closed_at=None,closingRequested=True).exists(): raise ValidationError('Register closing is awaiting approval; new sales are blocked.')
     if not cart: raise ValidationError('Cart cannot be empty.')
+    from .whatsapp_service import normalize_phone
+    mobile=str(data.get('customerMobile') or '').strip()
+    if mobile:
+        try: mobile=normalize_phone(mobile)
+        except ValueError as exc: raise ValidationError({'customerMobile':str(exc)})
     customer=None
     if data.get('customerId') and data['customerId']!='cust-walkin': customer=owned(Customer,data['customerId'],user)
-    elif data.get('customerMobile') and data['customerMobile']!='0000000000': customer=Customer.objects.filter(organization=user.organization,mobile=data['customerMobile']).first()
+    elif mobile: customer=Customer.objects.filter(organization=user.organization,mobile__in=[mobile, mobile[-10:]]).first()
     method=data.get('paymentMethod','Cash')
     if method not in ['Cash','Card','Bank','UPI','Credit','Bank Transfer','Split']: raise ValidationError('Unsupported payment method.')
-    inv=Invoice.objects.create(organization=user.organization,invoiceNumber='',branch=loc,customer=customer,customerName=customer.name if customer else 'Walk-in Customer',customerMobile=customer.mobile if customer else '',salesperson=user,date=timezone.localdate(),paymentMethod=method,checkoutKey=key,checkoutFingerprint=fingerprint)
+    inv=Invoice.objects.create(organization=user.organization,invoiceNumber='',branch=loc,customer=customer,customerName=customer.name if customer else 'Walk-in Customer',customerMobile=mobile or (customer.mobile if customer else ''),salesperson=user,date=timezone.localdate(),paymentMethod=method,checkoutKey=key,checkoutFingerprint=fingerprint)
     from .direct_perfume import prepare_lines,post_line
     prepared=prepare_lines(user,loc,cart)
     seen=set()

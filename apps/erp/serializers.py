@@ -120,6 +120,14 @@ class OpeningStockSerializer(serializers.Serializer):
     quantity=serializers.DecimalField(max_digits=18,decimal_places=4,min_value=Decimal('0'))
 
 class MaterialSerializer(TenantSerializer):
+    initialQty=serializers.SerializerMethodField()
+    @extend_schema_field(serializers.DecimalField(max_digits=18,decimal_places=4))
+    def get_initialQty(self, obj):
+        # Opening stock is historical; do not substitute current stock.
+        return m.Movement.objects.filter(
+            organization=obj.organization,stock__material=obj,
+            transaction='OPENING_STOCK',delta__gt=0
+        ).aggregate(total=Sum('delta'))['total'] or ZERO
     openingStocks=OpeningStockSerializer(many=True,write_only=True,required=False)
     def create(self,validated_data):
         from . import services

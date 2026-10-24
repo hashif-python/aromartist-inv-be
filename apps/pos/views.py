@@ -1,5 +1,5 @@
 """Mobile adapters: ERP remains the sole stock, invoice and accounting authority."""
-import hashlib,json
+import hashlib,json,logging
 from decimal import Decimal
 from datetime import datetime,date
 from zoneinfo import ZoneInfo
@@ -12,7 +12,7 @@ from drf_spectacular.utils import extend_schema
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import permissions
-from rest_framework.exceptions import ValidationError,PermissionDenied,AuthenticationFailed
+from rest_framework.exceptions import APIException,ValidationError,PermissionDenied,AuthenticationFailed
 from rest_framework.throttling import ScopedRateThrottle
 from rest_framework_simplejwt.tokens import RefreshToken
 from apps.accounts.permissions import has
@@ -24,6 +24,7 @@ from apps.erp import models as e,services as s
 from apps.erp.serializers import CustomerSerializer
 from . import models as p
 
+logger=logging.getLogger(__name__)
 METHODS=['Cash','Card','UPI','Bank Transfer']
 
 def require(user,*codes):
@@ -84,8 +85,26 @@ class Mobile(APIView):
         if not request.user.is_superuser and not has(request.user,'*') and not request.user.employees.filter(organization=request.user.organization,status='active').exists():raise PermissionDenied('An active linked employee is required.')
     @transaction.atomic
     def post(self,request,section,pk=None):
-        Organization.objects.select_for_update().get(pk=request.user.organization_id)
-        return self.mutate(request,section,pk)
+        try:
+            Organization.objects.select_for_update().get(pk=request.user.organization_id)
+            return self.mutate(request,section,pk)
+        except APIException as exc:
+            if section == 'checkout':
+                # Log the actual DRF validation/permission reason for HTTP 4xx.
+                # Do not log request bodies, access tokens, or customer details.
+                logger.warning(
+                    'Mobile POS checkout rejected: status=%s reason=%s branch=%s checkoutKey=%s userId=%s',
+                    exc.status_code, exc.detail, request.data.get('branchId'),
+                    request.data.get('checkoutKey'), request.user.pk,
+                )
+            raise  # Keep DRF's original response/status; never falsely report success.
+        except Exception:
+            if section == 'checkout':
+                logger.exception(
+                    'Unexpected mobile POS checkout failure: branch=%s checkoutKey=%s userId=%s',
+                    request.data.get('branchId'), request.data.get('checkoutKey'), request.user.pk,
+                )
+            raise  # Transaction rolls back; status recovery remains authoritative.
     @transaction.atomic
     def patch(self,request,section,pk=None):
         Organization.objects.select_for_update().get(pk=request.user.organization_id)
@@ -116,7 +135,7 @@ class Mobile(APIView):
                 inv=qs.filter(pk=pk).first()
                 if not inv:raise PermissionDenied('Invoice is outside your authorized scope.')
                 return Response(s.json_num(receipt(inv)))
-            if section=='today':qs=qs.filter(created_at__date=timezone.localdate())
+            if section in ('today','orders'):qs=qs.filter(created_at__date=timezone.localdate())
             else:
                 require(u,'pos.sales_history.view')
                 for key,lookup in [('fromDate','date__gte'),('toDate','date__lte')]:
@@ -171,7 +190,10 @@ class Mobile(APIView):
                 for row in payload['cart']:
                     if not isinstance(row,dict):raise ValidationError('Invalid cart line.')
                     s.integer(row.get('qty'))
-                    if not e.Variant.objects.filter(organization=u.organization,pk=row.get('id')).exists():raise ValidationError('Unknown variant.')
+                    if row.get('productId'):
+                        if not e.Product.objects.filter(organization=u.organization,pk=row['productId'],directBlend=True,status='active').exists():raise ValidationError('Unknown or inactive perfume product.')
+                        if row.get('recipeRevision') is None or not row.get('pricingToken'):raise ValidationError('Refresh the perfume product before saving this draft.')
+                    elif not e.Variant.objects.filter(organization=u.organization,pk=row.get('id')).exists():raise ValidationError('Unknown variant.')
                 if not d:d=p.Draft(organization=u.organization,cashier=u,branch=b)
                 d.payload=payload;d.label=str(data.get('label','Held sale'))[:100]
             if pk:d.revision+=1
@@ -186,6 +208,7 @@ class Mobile(APIView):
             if s.D(data.get('discount',0)) or any(s.D(row.get('discount',0)) for row in data['cart']):require(u,'pos.discount.apply')
             existing=e.Invoice.objects.filter(organization=u.organization,checkoutKey=key).first()
             shift=p.Shift.objects.select_for_update().filter(cashier=u,register__branch=b,closed_at=None).first()
+            if shift and shift.opened_at.astimezone(timezone.get_current_timezone()).date()!=timezone.localdate() and not existing:raise ValidationError('Previous business day is over. Settle the old shift and enter today’s opening cash before checkout.')
             if shift and shift.closingRequested and not existing:raise ValidationError('Register reconciliation is awaiting supervisor approval.')
             if not shift and not existing:raise ValidationError('Open your register shift before checkout.')
             draft=p.Draft.objects.select_for_update().filter(pk=data.get('draftId'),cashier=u,branch=b).first() if data.get('draftId') else None
@@ -222,11 +245,15 @@ class Mobile(APIView):
                 reg=p.Register.objects.select_for_update().filter(pk=data.get('registerId'),organization=u.organization,branch=b,active=True).first()
                 if not reg:raise ValidationError('Choose an authorized active register.')
                 if p.Shift.objects.filter(Q(register=reg)|Q(cashier=u),closed_at=None).exists():raise ValidationError('An active register/cashier shift already exists.')
-                shift=p.Shift.objects.create(organization=u.organization,register=reg,cashier=u,opening=s.D(data.get('opening',0)))
+                if p.Shift.objects.filter(cashier=u,register__branch=b,closed_at__isnull=False,opened_at__date=timezone.localdate()).exists():raise ValidationError('Today’s settlement is already closed. Start a new business day tomorrow.')
+                opening=s.D(data.get('opening',0))
+                if opening<0:raise ValidationError('Opening cash cannot be negative.')
+                shift=p.Shift.objects.create(organization=u.organization,register=reg,cashier=u,opening=opening)
                 return Response(s.json_num(shift_summary(shift)),status=201)
             shift=p.Shift.objects.select_for_update().filter(pk=pk,organization=u.organization,register__branch=b,closed_at=None).filter(Q(cashier=u)|Q(closingRequested=True) if has(u,'pos.register.approve_discrepancy') else Q(cashier=u)).first()
             if not shift:raise ValidationError('Your active shift was not found.')
             if data.get('action')=='cash':
+                if shift.opened_at.astimezone(timezone.get_current_timezone()).date()!=timezone.localdate():raise ValidationError('Settle the previous business day before recording cash movements.')
                 if shift.closingRequested:raise ValidationError('Cash adjustments are locked while reconciliation is pending.')
                 require(u,'pos.register.cash_adjust')
                 amount=s.D(data.get('amount'),True);kind=data.get('kind');reason=str(data.get('reason','')).strip()
@@ -237,6 +264,7 @@ class Mobile(APIView):
             elif data.get('action')=='close':
                 require(u,'pos.register.close')
                 expected=shift_summary(shift)['expected'];counted=shift.counted if shift.closingRequested and shift.cashier_id!=u.pk else s.D(data.get('counted'));diff=counted-expected
+                if counted<0:raise ValidationError('Counted cash cannot be negative.')
                 shift.expected=expected;shift.counted=counted;shift.difference=diff
                 if abs(diff)>shift.register.discrepancyLimit and not has(u,'pos.register.approve_discrepancy'):
                     shift.closingRequested=True

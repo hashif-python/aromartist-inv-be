@@ -15,9 +15,14 @@ class PerfumeProducts(APIView):
         permit(request.user,'inventory.product.view','inventory.view','sales.invoice.checkout','sales.pos','pos.stock.view')
         branch=sale_branch(request.user,request.query_params) if request.query_params.get('branchId') else None
         qs=m.Product.objects.filter(organization=request.user.organization,directBlend=True).order_by('name')
+        if request.query_params.get('status') == 'active':qs=qs.filter(status='active')
         if pk:qs=qs.filter(pk=pk)
         if request.query_params.get('search'):qs=qs.filter(name__icontains=request.query_params['search'][:120])
-        values=[product_data(p,request.user,branch) for p in qs[:200]]
+        # Offset pagination is opt-in to preserve existing web consumers.
+        try:offset=int(request.query_params.get('offset',0));limit=int(request.query_params.get('limit',200))
+        except (ValueError,TypeError):raise ValidationError('Invalid catalogue pagination.')
+        if offset<0 or not 1<=limit<=200:raise ValidationError('Invalid catalogue pagination.')
+        values=[product_data(p,request.user,branch) for p in qs[offset:offset+limit]]
         if pk:
             if not values:raise ValidationError('Product was not found.')
             return Response(values[0])

@@ -38,6 +38,8 @@ services:
       EMAIL_HOST_USER: ${EMAIL_HOST_USER:-}
       EMAIL_HOST_PASSWORD: ${EMAIL_HOST_PASSWORD:-}
       DEFAULT_FROM_EMAIL: ${DEFAULT_FROM_EMAIL:-no-reply@localhost}
+      WHATSAPP_API_BASE_URL: ${WHATSAPP_API_BASE_URL}
+      WHATSAPP_API_KEY: ${WHATSAPP_API_KEY}
     volumes:
       - static_data:/app/staticfiles
       - media_data:/app/media

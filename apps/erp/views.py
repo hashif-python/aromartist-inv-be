@@ -187,6 +187,44 @@ class MaterialViewSet(TenantViewSet):
     read_permissions=['inventory.view','production.view','production.formulation','transfers.view','purchases.view','purchases.bills'];write_permissions=['*','warehouse.manage']
     def perform_create(self,serializer):
         serializer.save(organization=self.request.user.organization)
+
+    @action(detail=True, methods=['get', 'post'], url_path='current-quantity')
+    @transaction.atomic
+    def current_quantity(self, request, pk=None):
+        """Read or set the absolute quantity at one authorized physical stock location."""
+        material = self.get_object()
+        location_id = request.data.get('locationId') if request.method == 'POST' else request.query_params.get('locationId')
+        if not location_id:
+            raise ValidationError({'locationId': 'Select a branch or warehouse.'})
+        loc = svc.location(request.user, location_id)
+        if loc.isVirtual:
+            raise ValidationError({'locationId': 'Choose a physical stock location.'})
+        if request.method == 'POST' and not (has(request.user, 'inventory.adjust') or has(request.user, 'warehouse.manage')):
+            from rest_framework.exceptions import PermissionDenied
+            raise PermissionDenied('Stock adjustment permission is required.')
+        stock = svc.stock_for(request.user, loc, material)
+        before = stock.quantity
+        if request.method == 'GET':
+            return Response({'locationId': loc.pk, 'quantity': before, 'unit': material.unit})
+        amount = serializers.DecimalField(max_digits=18, decimal_places=4, min_value=Decimal('0')).run_validation(request.data.get('quantity'))
+        if material.unit == 'pcs' and amount != amount.to_integral_value():
+            raise ValidationError({'quantity': 'Piece quantities must be whole numbers.'})
+        # A stale edit must never overwrite intervening sales, purchases or adjustments.
+        expected = serializers.DecimalField(max_digits=18, decimal_places=4, min_value=Decimal('0')).run_validation(request.data.get('expectedQuantity'))
+        if before != expected:
+            from rest_framework.exceptions import APIException
+            class StockConflict(APIException):
+                status_code = 409
+                default_detail = 'Stock changed since the form was opened. Refresh and try again.'
+            raise StockConflict()
+        delta = amount - before
+        if delta:
+            svc.adjust(request.user, {
+                'itemId': material.pk, 'itemType': 'Raw Material', 'location': str(loc.pk),
+                'adjustmentType': 'add' if delta > 0 else 'subtract',
+                'quantity': abs(delta), 'reason': 'Current quantity corrected from raw material edit',
+            })
+        return Response({'locationId': loc.pk, 'quantity': amount, 'previousQuantity': before, 'adjustment': delta, 'unit': material.unit})
 class FragranceViewSet(TenantViewSet):
     def perform_destroy(self,instance):
         if isinstance(instance,m.Fragrance):

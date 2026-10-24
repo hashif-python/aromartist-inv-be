@@ -432,3 +432,18 @@ class CodeSequence(TenantModel):
     active=models.BooleanField(default=True)
     class Meta:
         constraints=[models.UniqueConstraint(fields=['organization','documentType','period'],name='code_sequence_scope')]
+
+
+class WhatsAppConnection(TenantModel):
+    instance_name=models.CharField(max_length=100,unique=True)
+    auto_send=models.BooleanField(default=False)
+    class Meta:
+        constraints=[models.UniqueConstraint(fields=['organization'],name='one_whatsapp_connection_per_org')]
+
+class WhatsAppInvoiceDelivery(TenantModel):
+    invoice=relation(Invoice,related_name='whatsapp_deliveries')
+    phone=models.CharField(max_length=32)
+    status=models.CharField(max_length=20,default='pending')
+    provider_message_id=models.CharField(max_length=160,blank=True)
+    error=models.TextField(blank=True)
+    sent_at=models.DateTimeField(null=True,blank=True)
