@@ -17,6 +17,10 @@ class PerfumeProducts(APIView):
         qs=m.Product.objects.filter(organization=request.user.organization,directBlend=True).order_by('name')
         if request.query_params.get('status') == 'active':qs=qs.filter(status='active')
         if pk:qs=qs.filter(pk=pk)
+        if not pk and request.query_params.get('catalogueSummary')=='1' and branch is None:
+            from .serializers import ProductSerializer
+            records=ProductSerializer(qs,many=True,context={'request':request}).data
+            return Response([dict(id=p['id'],name=p['name'],code=p['code'],fragranceName=p.get('fragranceName',''),fillVolumeMl=p['fillVolumeMl'],sellingPrice=p['sellingPrice'],status=p['status'],available=p['availableStock']) for p in records])
         if request.query_params.get('search'):qs=qs.filter(name__icontains=request.query_params['search'][:120])
         # Offset pagination is opt-in to preserve existing web consumers.
         try:offset=int(request.query_params.get('offset',0));limit=int(request.query_params.get('limit',200))
