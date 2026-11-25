@@ -7,6 +7,8 @@ from apps.erp.models import Location,Product
 from .models import Offer
 from .serializers import OfferSerializer
 from .services import available,calculate
+from apps.erp.services import integer, location
+from apps.erp.pricing import for_product
 
 def manager(user):
     if not (user.is_superuser or has(user,'sales.pos') and has(user,'pos.discount.apply')):raise PermissionDenied('Offer management permission required.')
@@ -33,13 +35,14 @@ class OfferDetail(APIView):
         return Response(serializer.data)
 class Preview(APIView):
     def post(self,request):
-        branch=get_object_or_404(Location,pk=request.data.get('branchId'),organization=request.user.organization,kind='Branch',isVirtual=False)
+        branch=location(request.user,request.data.get('branchId'),'Branch')
+        if branch.isVirtual:raise ValidationError('Select a physical branch.')
         rows=request.data.get('cart',[])
-        if not isinstance(rows,list) or len(rows)>100:raise ValidationError('Invalid cart.')
+        if not isinstance(rows,list) or len(rows)>100 or any(not isinstance(r,dict) for r in rows):raise ValidationError('Invalid cart.')
         ids=[r.get('productId') for r in rows]
         products={str(p.pk):p for p in Product.objects.filter(organization=request.user.organization,pk__in=ids,status='active')}
         if len(products)!=len(set(ids)):raise ValidationError('Invalid products.')
-        lines=[{'productId':r['productId'],'qty':r['qty'],'rate':products[str(r['productId'])].sellingPrice} for r in rows]
+        lines=[{'productId':r['productId'],'qty':integer(r.get('qty')),'rate':for_product(request.user,products[str(r['productId'])])['price'] if products[str(r['productId'])].directBlend else products[str(r['productId'])].sellingPrice} for r in rows]
         result=calculate(request.user.organization,branch,lines)
         subtotal=sum((l['rate']*l['qty'] for l in lines),0)
         return Response({'subtotal':str(subtotal),'discount':str(result['discount'] if result else 0),'total':str(subtotal-(result['discount'] if result else 0)),'offer':{'id':result['offer'].pk,'name':result['offer'].name} if result else None})

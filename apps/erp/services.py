@@ -99,7 +99,7 @@ def formula_preview(user,data):
     frag=owned(Fragrance,data.get('fragranceId'),user)
     conc=owned(Concentration,data.get('concentrationId'),user)
     size=owned(BottleSize,data.get('bottleSizeId'),user)
-    solvent=Material.objects.filter(Q(categoryRef__categoryType='Solvent')|Q(categoryRef__isnull=True,category='Solvent'),organization=user.organization,status='active',unit='ml').order_by('code').first()
+    solvent=Material.objects.filter(Q(materialType='Solvent')|Q(categoryRef__isnull=True,materialType='Other',category='Solvent'),organization=user.organization,status='active',unit='ml').order_by('code').first()
     if not solvent: raise ValidationError('Create an active Solvent raw material before defining formulas.')
     oil=frag.perfumeOilId
     oilqty=(size.volumeMl*conc.oilPercentage/100).quantize(Decimal('.0001'))
@@ -303,6 +303,16 @@ def create_purchase_return(user,data):
     post_stock(user,wh,mat,-qty,'PURCHASE_RETURN',r.returnNumber,r.reason)
     return r
 
+def tax_breakdown(total,data):
+    rate=D(data.get('gstRate',18))
+    if rate not in (0,5,12,18,28):raise ValidationError('Unsupported GST rate.')
+    interstate=data.get('interState',False)
+    if not isinstance(interstate,bool):raise ValidationError('interState must be a boolean.')
+    taxable=cash(total*Decimal(100)/(Decimal(100)+rate))
+    tax=cash(total-taxable)
+    cgst=ZERO if interstate else cash(tax/2)
+    return dict(gstRate=rate,taxableAmount=taxable,tax=tax,cgst=cgst,sgst=ZERO if interstate else tax-cgst,igst=tax if interstate else ZERO)
+
 def checkout(user,data):
     from .direct_perfume import sale_branch
     loc=sale_branch(user,data)
@@ -315,7 +325,7 @@ def checkout(user,data):
         # Serialize retries from this operator; stock locks still arbitrate other operators.
         from django.contrib.auth import get_user_model
         get_user_model().objects.select_for_update().get(pk=user.pk)
-        relevant={'branch':loc.pk,'customer':data.get('customerId'),'mobile':data.get('customerMobile'),'discount':str(data.get('discount',0)),'method':data.get('paymentMethod','Cash'),'items':[{'id':row.get('productId') or row.get('id') or row.get('variantId'),'qty':str(row.get('qty')),'recipeRevision':row.get('recipeRevision'),'pricingToken':row.get('pricingToken'),'discount':str(row.get('discount',0))} for row in cart]}
+        relevant={'branch':loc.pk,'customer':data.get('customerId'),'mobile':data.get('customerMobile'),'discount':str(data.get('discount',0)),'gstRate':str(data.get('gstRate',18)),'interState':data.get('interState',False),'method':data.get('paymentMethod','Cash'),'items':[{'id':row.get('productId') or row.get('id') or row.get('variantId'),'qty':str(row.get('qty')),'recipeRevision':row.get('recipeRevision'),'pricingToken':row.get('pricingToken'),'discount':str(row.get('discount',0))} for row in cart]}
         fingerprint=hashlib.sha256(json.dumps(relevant,sort_keys=True).encode()).hexdigest()
         existing=Invoice.objects.filter(organization=user.organization,checkoutKey=key).first()
         if existing:
@@ -324,17 +334,12 @@ def checkout(user,data):
     from apps.pos.models import Shift
     if Shift.objects.filter(cashier=user,register__branch=loc,closed_at=None,closingRequested=True).exists(): raise ValidationError('Register closing is awaiting approval; new sales are blocked.')
     if not cart: raise ValidationError('Cart cannot be empty.')
-    from .whatsapp_service import normalize_phone
-    mobile=str(data.get('customerMobile') or '').strip()
-    if mobile:
-        try: mobile=normalize_phone(mobile)
-        except ValueError as exc: raise ValidationError({'customerMobile':str(exc)})
     customer=None
     if data.get('customerId') and data['customerId']!='cust-walkin': customer=owned(Customer,data['customerId'],user)
-    elif mobile: customer=Customer.objects.filter(organization=user.organization,mobile__in=[mobile, mobile[-10:]]).first()
+    elif data.get('customerMobile') and data['customerMobile']!='0000000000': customer=Customer.objects.filter(organization=user.organization,mobile=data['customerMobile']).first()
     method=data.get('paymentMethod','Cash')
     if method not in ['Cash','Card','Bank','UPI','Credit','Bank Transfer','Split']: raise ValidationError('Unsupported payment method.')
-    inv=Invoice.objects.create(organization=user.organization,invoiceNumber='',branch=loc,customer=customer,customerName=customer.name if customer else 'Walk-in Customer',customerMobile=mobile or (customer.mobile if customer else ''),salesperson=user,date=timezone.localdate(),paymentMethod=method,checkoutKey=key,checkoutFingerprint=fingerprint)
+    inv=Invoice.objects.create(organization=user.organization,invoiceNumber='',branch=loc,customer=customer,customerName=customer.name if customer else 'Walk-in Customer',customerMobile=customer.mobile if customer else '',salesperson=user,date=timezone.localdate(),paymentMethod=method,checkoutKey=key,checkoutFingerprint=fingerprint)
     from .direct_perfume import prepare_lines,post_line
     prepared=prepare_lines(user,loc,cart)
     seen=set()
@@ -354,16 +359,24 @@ def checkout(user,data):
         InvoiceLine.objects.create(organization=user.organization,invoice=inv,variant=v,productName=f'{v.productId.name} {v.bottleSizeId.name} {v.concentrationId.code}',sku=v.sku,qty=qty,rate=v.sellingPrice,discount=disc,total=total,costSnapshot=v.costPrice)
         post_stock(user,loc,v,-Decimal(qty),'SALE',inv.invoiceNumber)
         inv.subtotal+=total
-    inv.discount=D(data.get('discount',0))
-    if inv.discount>inv.subtotal: raise ValidationError('Order discount exceeds subtotal.')
-    for l in inv.lines.select_related('variant'):
-        allocated=inv.discount*l.total/inv.subtotal if inv.subtotal else ZERO
+    from apps.promotions.services import apply_to_invoice
+    inv.total=inv.subtotal
+    promotion=apply_to_invoice(inv) or ZERO
+    manual=D(data.get('discount',0))
+    remaining=inv.subtotal-promotion
+    if manual>remaining: raise ValidationError('Order discount exceeds subtotal.')
+    lines=list(inv.lines.select_related('variant','product').order_by('pk'))
+    unallocated=manual
+    for index,l in enumerate(lines):
+        allocated=unallocated if index==len(lines)-1 else min(unallocated,l.total,cash(manual*l.total/remaining)) if remaining else ZERO
+        unallocated-=allocated
         if (l.total-allocated)/l.qty<(l.product.minSellingPrice if l.product_id else l.variant.minSellingPrice): raise ValidationError('Order discount breaches minimum selling price.')
         l.total=cash(l.total-allocated);l.save(update_fields=['total'])
+    inv.discount=promotion+manual
     inv.total=cash(inv.subtotal-inv.discount)
+    for field,value in tax_breakdown(inv.total,data).items():setattr(inv,field,value)
     tendered=D(data.get('tendered',inv.total))
     if method=='Cash' and tendered<inv.total: raise ValidationError('Cash received is below the invoice total.')
-    # Tax is zero in the uploaded POS, never accept a client supplied tax/total.
     inv.paid=ZERO if method=='Credit' else inv.total
     if method=='Credit' and not customer: raise ValidationError('A registered customer is required for credit sales.')
     inv.status='Unpaid' if method=='Credit' else 'Paid';inv.save()

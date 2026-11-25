@@ -57,10 +57,10 @@ def automatic_packaging(user,size):
     for field,kind in [('pumpMaterialRef','pump'),('capMaterialRef','cap')]:
         mat=getattr(size,field)
         if not mat:
-            candidates=[x for x in m.Material.objects.filter(organization=user.organization,status='active',unit='pcs').select_related('categoryRef') if material_type(x)=='Packaging' and kind in (x.category+' '+x.name).lower() and (not x.compatibleBottleSizes.exists() or x.compatibleBottleSizes.filter(pk=size.pk).exists())]
+            candidates=[x for x in m.Material.objects.filter(organization=user.organization,status='active',unit='pcs').select_related('categoryRef') if material_type(x)=='Packaging' and kind in (x.category+' '+x.name).lower()]
             if len(candidates)!=1: raise ValidationError(f'Set a default {kind} for {size.name} in Bottle Setup; found {len(candidates)} compatible choices.')
             mat=candidates[0]
-        if mat.organization_id!=user.organization_id or mat.status!='active' or material_type(mat)!='Packaging' or mat.unit!='pcs' or (mat.compatibleBottleSizes.exists() and not mat.compatibleBottleSizes.filter(pk=size.pk).exists()): raise ValidationError(f'{kind.title()} for {size.name} must be active, compatible packaging in pcs.')
+        if mat.organization_id!=user.organization_id or mat.status!='active' or material_type(mat)!='Packaging' or mat.unit!='pcs': raise ValidationError(f'{kind.title()} for {size.name} must be active, compatible packaging in pcs.')
         refs.append(mat)
     if len({mat.pk for mat in refs})!=3: raise ValidationError('Bottle, pump and cap must be distinct materials.')
     return [{'materialId':mat.pk,'qty':1} for mat in refs]
@@ -104,7 +104,6 @@ def save_product(user,data,instance=None):
         for r in row.get('packaging',[]):
             mat=s.owned(m.Material,r.get('materialId'),user);qty=s.D(r.get('qty'),True)
             if material_type(mat)!='Packaging' or mat.status!='active' or mat.pk in used: raise ValidationError('Choose unique active packaging materials.')
-            if mat.compatibleBottleSizes.exists() and not mat.compatibleBottleSizes.filter(pk=size.pk).exists(): raise ValidationError(f'{mat.name} is not compatible with {size.name}.')
             if mat.unit=='pcs' and qty!=qty.to_integral_value(): raise ValidationError('Packaging pieces require whole quantities.')
             used.add(mat.pk);packaging.append((mat,qty))
         if size.bottleMaterialRef_id not in used: raise ValidationError('Include the selected bottle inventory material in packaging.')

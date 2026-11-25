@@ -128,3 +128,7 @@ LOGGING = {
     "handlers": {"console": {"class": "logging.StreamHandler"}},
     "root": {"handlers": ["console"], "level": "INFO"},
 }
+
+# WhatsApp provider configuration (secrets supplied through environment).
+WHATSAPP_API_BASE_URL = __import__("os").environ.get("WHATSAPP_API_BASE_URL", "")
+WHATSAPP_API_KEY = __import__("os").environ.get("WHATSAPP_API_KEY", "")

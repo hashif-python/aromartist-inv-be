@@ -174,15 +174,57 @@ class CustomerViewSet(TenantViewSet):
 class MaterialCategoryViewSet(TenantViewSet):
     queryset=m.MaterialCategory.objects.all();serializer_class=s.MaterialCategorySerializer
     read_permissions=['inventory.view','production.view','production.formulation','purchases.view','purchases.bills','transfers.view'];write_permissions=['*','warehouse.manage']
+    action_permissions={'list':read_permissions+['inventory.raw_material.view','inventory.raw_material.create','inventory.raw_material.edit','warehouse.manage']}
     def perform_update(self,serializer):
         obj=serializer.save()
         obj.materials.update(category=obj.name)
 
+class MaterialSubcategoryViewSet(TenantViewSet):
+    queryset=m.MaterialSubcategory.objects.all();serializer_class=s.MaterialSubcategorySerializer
+    read_permissions=MaterialCategoryViewSet.read_permissions
+    write_permissions=MaterialCategoryViewSet.write_permissions
+    action_permissions=MaterialCategoryViewSet.action_permissions
+
 class MaterialViewSet(TenantViewSet):
+    @transaction.atomic
     def perform_destroy(self,instance):
-        for product in m.Product.objects.filter(organization=instance.organization,directBlend=True).only('recipe','packagingRecipe'):
-            if any(row.get('materialId')==instance.pk for row in product.recipe+product.packagingRecipe):raise ValidationError('Material is used in a product recipe/packaging set. Set it inactive instead.')
-        super().perform_destroy(instance)
+        from django.db.models.deletion import ProtectedError, RestrictedError
+        instance = m.Material.objects.select_for_update().get(pk=instance.pk, organization=self.request.user.organization)
+        def contains_material(value):
+            if isinstance(value, dict):
+                return any(contains_material(v) for v in value.values())
+            if isinstance(value, list):
+                return any(contains_material(v) for v in value)
+            return isinstance(value, str) and value == str(instance.pk)
+        # Recipes and historical snapshots may store IDs without foreign keys.
+        for model, fields in ((m.Product, ('recipe', 'packagingRecipe', 'blendConfig')), (m.Fragrance, ('solventRecipe',)), (m.InvoiceLine, ('recipeSnapshot', 'packagingSnapshot'))):
+            available = {f.name for f in model._meta.fields}
+            fields = [f for f in fields if f in available]
+            if not fields:
+                continue
+            qs = model.objects.all()
+            if 'organization' in available:
+                qs = qs.filter(organization=instance.organization)
+            for values in qs.values_list(*fields).iterator():
+                if any(contains_material(v) for v in values):
+                    raise ValidationError({'detail': 'This material is referenced by a recipe or sales history. Deactivate it instead.'})
+        stocks = list(m.Stock.objects.select_for_update().filter(material=instance))
+        for stock in stocks:
+            svc.enforce_location(self.request.user, stock.location)
+            movements = list(m.Movement.objects.select_for_update().filter(stock=stock))
+            if (len(movements) > 1 or any(
+                movement.transaction != 'OPENING_STOCK' or movement.previousStock != 0
+                or movement.delta <= 0 or movement.newStock != movement.delta
+                or movement.newStock != stock.quantity
+                for movement in movements
+            ) or (not movements and stock.quantity != 0)):
+                raise ValidationError({'detail': 'This material has inventory transaction history or unexplained stock. Deactivate it instead.'})
+        try:
+            m.Movement.objects.filter(stock_id__in=[stock.pk for stock in stocks]).delete()
+            m.Stock.objects.filter(pk__in=[stock.pk for stock in stocks]).delete()
+            super().perform_destroy(instance)
+        except (ProtectedError, RestrictedError) as exc:
+            raise ValidationError({'detail': 'This material is used by another business record. Remove the dependency or deactivate the material instead.'}) from exc
     queryset=m.Material.objects.all();serializer_class=s.MaterialSerializer
     read_permissions=['inventory.view','production.view','production.formulation','transfers.view','purchases.view','purchases.bills'];write_permissions=['*','warehouse.manage']
     def perform_create(self,serializer):

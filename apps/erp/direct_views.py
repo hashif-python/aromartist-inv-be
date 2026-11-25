@@ -50,16 +50,23 @@ class BlendQuote(APIView):
     @transaction.atomic
     def post(self,request):
         permit(request.user,'sales.invoice.checkout','sales.pos')
-        from .direct_perfume import prepare_lines,requirements as product_requirements
+        from .direct_perfume import prepare_lines,requirements as product_requirements,perfume_stock_location
         from collections import defaultdict
         from decimal import Decimal
         branch=sale_branch(request.user,request.data);cart=request.data.get('cart')
         if not isinstance(cart,list) or not cart or len(cart)>100 or any(not isinstance(r,dict) or not r.get('productId') for r in cart):raise ValidationError('Add recipe products to the cart.')
-        products=prepare_lines(request.user,branch,cart,lock=False);requirements=defaultdict(lambda:Decimal(0));total=Decimal(0)
+        products=prepare_lines(request.user,branch,cart,lock=False);requirements=defaultdict(lambda:Decimal(0));total=Decimal(0);entries=[]
         for row in cart:
-            product=products[row['productId']];qty=s.integer(row.get('qty'));total+=product._pricing['price']*qty
+            product=products[row['productId']];qty=s.integer(row.get('qty'));total+=product._pricing['price']*qty;entries.append(dict(productId=product.pk,qty=qty,rate=product._pricing['price']))
             for required in product_requirements(product,qty):requirements[required['materialId']]+=required['quantity']
-        return Response(s.json_num(dict(branchId=branch.pk,total=s.cash(total),tax=0,ingredients=[dict(materialId=k,name=m.Material.objects.get(pk=k).name,required=q,available=m.Stock.objects.get(location=s.stock_location(request.user,branch),material_id=k).quantity,unit=m.Material.objects.get(pk=k).unit) for k,q in sorted(requirements.items())])))
+        from apps.promotions.services import calculate
+        offer=calculate(request.user.organization,branch,entries)
+        promotion=offer['discount'] if offer else Decimal(0)
+        manual=s.D(request.data.get('discount',0))
+        if manual>total-promotion:raise ValidationError('Order discount exceeds subtotal after promotions.')
+        payable=s.cash(total-promotion-manual)
+        taxes=s.tax_breakdown(payable,request.data)
+        return Response(s.json_num(dict(branchId=branch.pk,subtotal=s.cash(total),discount=promotion+manual,promotionDiscount=promotion,total=payable,taxTotal=taxes['tax'],**taxes,ingredients=[dict(materialId=k,name=m.Material.objects.get(pk=k).name,required=q,available=m.Stock.objects.get(location=perfume_stock_location(request.user,branch),material_id=k).quantity,unit=m.Material.objects.get(pk=k).unit) for k,q in sorted(requirements.items())])))
 
 @extend_schema(exclude=True)
 class BlendStatus(APIView):
@@ -80,5 +87,9 @@ class FragrancePricing(APIView):
         permit(request.user,'inventory.product.view','inventory.product.create','inventory.product.edit','sales.invoice.checkout','sales.pos')
         if request.data.get('branchId') or (request.user.branch_id and request.user.branch.isVirtual):sale_branch(request.user,request.data)
         from .pricing import calculate
+        from .direct_perfume import suggested_name,recipe,packaging_for
         result=calculate(request.user,request.data)
-        return Response(s.json_num(dict(sellingPrice=result['price'],pricing=result['snapshot'],pricingToken=result['token'])))
+        bottle=s.owned(m.BottleSize,request.data.get('bottleSizeId'),request.user)
+        rows=recipe(request.user,request.data.get('recipe'))
+        packaging=packaging_for(request.user,bottle)
+        return Response(s.json_num(dict(sellingPrice=result['price'],pricing=result['snapshot'],pricingToken=result['token'],suggestedName=suggested_name(request.user,rows,bottle,request.data['fragranceType']),fillVolumeMl=bottle.volumeMl,packaging=packaging)))

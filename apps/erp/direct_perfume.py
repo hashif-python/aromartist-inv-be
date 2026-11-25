@@ -40,6 +40,11 @@ def recipe(user,rows):
     if types!={'Perfume Oil','Solvent'}:raise ValidationError('Include at least one perfume oil and one solvent.')
     return result
 
+def suggested_name(user, rows, bottle, kind):
+    names=[s.owned(m.Fragrance,r['fragranceId'],user).name for r in rows if r.get('fragranceId')]
+    suffix=f" · {kind.replace('_',' ')} · {bottle.volumeMl.normalize():f} ml"
+    return ' + '.join(names)[:160-len(suffix)]+suffix
+
 @transaction.atomic
 def save_product(user,data,instance=None):
     permit(user,'inventory.product.edit') if instance else permit(user,'inventory.product.create')
@@ -50,10 +55,7 @@ def save_product(user,data,instance=None):
         if not instance.directBlend:raise ValidationError('Legacy products are preserved; create a new recipe product.')
         if data.get('recipeRevision')!=instance.recipeRevision:raise ValidationError('Product changed. Reload before saving.')
     name=str(data.get('name','')).strip();price=s.D(data.get('sellingPrice',0));volume=s.D(data.get('fillVolumeMl',instance.fillVolumeMl if instance else 1),True);minimum=Decimal(0)
-    if not name or len(name)>160 or volume>10000 :raise ValidationError('Enter name, bottle volume up to 10000 ml and a positive selling price; minimum must not exceed selling price.')
-    duplicates=m.Product.objects.filter(organization=user.organization,directBlend=True,name__iexact=name)
-    if instance:duplicates=duplicates.exclude(pk=instance.pk)
-    if duplicates.exists():raise ValidationError('A perfume product with this name already exists. Use a distinct name for a customer-specific recipe.')
+    if len(name)>160 or volume>10000 :raise ValidationError('Enter name, bottle volume up to 10000 ml and a positive selling price; minimum must not exceed selling price.')
     rows=recipe(user,data.get('recipe'))
     fragrance=None
     fragrance_id=data.get('fragranceId',instance.fragranceId_id if instance else None)
@@ -80,6 +82,15 @@ def save_product(user,data,instance=None):
         if data.get('pricingToken') and data['pricingToken']!=calculated['token']:raise ValidationError('Pricing changed. Refresh price and review the result before saving.')
         price=calculated['price']
     elif not instance:raise ValidationError('Select a fragrance type for the product.')
+    if not name:
+        if not bottle or not fragrance_type:raise ValidationError('Enter a perfume name.')
+        base=suggested_name(user,rows,bottle,fragrance_type)
+        name=base;counter=2
+        while m.Product.objects.filter(organization=user.organization,directBlend=True,name__iexact=name).exclude(pk=instance.pk if instance else None).exists():
+            suffix=f" ({counter})";name=base[:160-len(suffix)]+suffix;counter+=1
+    duplicates=m.Product.objects.filter(organization=user.organization,directBlend=True,name__iexact=name)
+    if instance:duplicates=duplicates.exclude(pk=instance.pk)
+    if duplicates.exists():raise ValidationError('A perfume product with this name already exists. Use a distinct name for a customer-specific recipe.')
     material_ids=[r['materialId'] for r in rows]+[r['materialId'] for r in packaging]
     costs={x.pk:x.currentCost for x in m.Material.objects.select_for_update().filter(organization=user.organization,pk__in=material_ids).order_by('pk')}
     raw_cost=sum((volume*Decimal(r['percentage'])/100).quantize(Decimal('.0001'),rounding=ROUND_HALF_UP)*costs[r['materialId']] for r in rows)
@@ -110,7 +121,6 @@ def packaging_for(user,bottle):
         expected={'Pump / atomizer':'Pump','Dip tube':'Dip Tube'}.get(role,role)
         if packaging_type(material)!=expected:raise ValidationError(f'{role}: select a matching packaging subtype in Bottle Setup.')
         if key in seen:raise ValidationError('Bottle, cap, pump and separate dip tube must be distinct stock materials.')
-        if material.compatibleBottleSizes.exists() and not material.compatibleBottleSizes.filter(pk=bottle.pk).exists():raise ValidationError(f'{material.name} is not compatible with this bottle.')
         seen.add(key);rows.append(dict(materialId=key,quantity='1',role=role))
     return rows
 
@@ -120,8 +130,24 @@ def requirements(product,qty):
         rows.append(dict(materialId=row['materialId'],quantity=Decimal(row['quantity'])*qty,unit='pcs',role=row['role'],kind='packaging'))
     return rows
 
+def perfume_stock_location(user, loc=None):
+    """Resolve direct perfume sales only; leave other inventory workflows unchanged."""
+    if user.organization.singleLocationMode:
+        return s.stock_location(user, loc)
+    if loc is None:
+        return None
+    if loc.organization_id != user.organization_id or loc.status != 'active' or loc.isVirtual:
+        raise ValidationError('Select an active physical stock location.')
+    s.enforce_location(user, loc)
+    if loc.kind == 'Branch' and loc.warehouse_id:
+        loc = loc.warehouse
+        if loc.organization_id != user.organization_id or loc.kind != 'Warehouse' or loc.status != 'active' or loc.isVirtual:
+            raise ValidationError('The linked warehouse is not an active physical warehouse.')
+        s.enforce_location(user, loc)
+    return loc
+
 def prepare_lines(user,branch,cart,lock=True):
-    branch=s.stock_location(user,branch)
+    branch=perfume_stock_location(user,branch)
     products={};need=defaultdict(lambda:Decimal(0));seen=set()
     for row in cart:
         if not row.get('productId'):continue
@@ -150,7 +176,7 @@ def prepare_lines(user,branch,cart,lock=True):
     return products
 
 def post_line(user,branch,invoice,row,products):
-    branch=s.stock_location(user,branch)
+    branch=perfume_stock_location(user,branch)
     product=products[row['productId']];qty=s.integer(row.get('qty'));discount=s.D(row.get('discount',0));rate=product._pricing['price'];total=rate*qty-discount
     if total<0 or total/qty<product.minSellingPrice:raise ValidationError('Discount breaches minimum selling price.')
     snapshot=[];packaging_snapshot=[];cost=Decimal(0)
@@ -165,8 +191,26 @@ def post_line(user,branch,invoice,row,products):
         s.post_stock(user,branch,material,-amount,'POS_PACKAGING',invoice.invoiceNumber,f'Packaging {product.code}: {qty} bottles')
     return m.InvoiceLine.objects.create(organization=user.organization,invoice=invoice,product=product,productName=product.name,sku=product.code,qty=qty,rate=rate,discount=discount,total=total,costSnapshot=s.cash(cost/qty),recipeSnapshot=snapshot,packagingSnapshot=packaging_snapshot,pricingSnapshot=product._pricing['snapshot'])
 
+def producible_stock(product,user,location=None):
+    """Sum independent location capacities; never pool ingredients across sites."""
+    if product.status!='active' or not product.bottleSizeRef_id or len(product.packagingRecipe)<3 or not product.recipe:
+        return 0
+    required=defaultdict(Decimal)
+    for row in requirements(product,Decimal(1)):
+        if row['quantity']<=0:return 0
+        required[row['materialId']]+=row['quantity']
+    if not required:return 0
+    if location is not None or user.organization.singleLocationMode:
+        location=perfume_stock_location(user,location)
+    stocks=s.scoped_stocks(user).filter(material_id__in=required,variant__isnull=True,location__status='active',location__isVirtual=False,material__status='active')
+    if location is not None:stocks=stocks.filter(location=location)
+    balances=defaultdict(lambda:defaultdict(Decimal))
+    for loc,key,qty in stocks.values_list('location_id','material_id','quantity'):
+        balances[loc][key]+=qty
+    return sum(max(0,min(int(amounts[key]//qty) for key,qty in required.items())) for amounts in balances.values())
+
 def product_data(product,user,branch=None):
-    if user.organization.singleLocationMode:branch=s.stock_location(user,branch)
+    if branch is not None or user.organization.singleLocationMode:branch=perfume_stock_location(user,branch)
     rows=[];available=None
     for row in product.recipe:
         material=s.owned(m.Material,row['materialId'],user)
@@ -179,7 +223,7 @@ def product_data(product,user,branch=None):
         material=s.owned(m.Material,r['materialId'],user);balance=m.Stock.objects.filter(organization=user.organization,location=branch,material=material).values_list('quantity',flat=True).first() or Decimal(0) if branch else None
         if branch:available=min(available,int(balance//Decimal(r['quantity']))) if available is not None else int(balance//Decimal(r['quantity']))
         packaging.append(dict(**r,name=material.name,unit='pcs',available=balance))
-    if not product.bottleSizeRef_id or len(product.packagingRecipe)<3:available=0
+    available=producible_stock(product,user,branch)
     from .pricing import for_product
     pricing_error=''
     try:pricing=for_product(user,product)

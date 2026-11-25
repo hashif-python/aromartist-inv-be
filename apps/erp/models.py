@@ -75,12 +75,18 @@ class Customer(Master):
     class Meta: constraints=[models.UniqueConstraint(fields=['organization','mobile'],name='customer_mobile')]
 
 class MaterialCategory(Master):
-    categoryType=models.CharField(max_length=20,choices=[('Perfume Oil','Perfume Oil'),('Solvent','Solvent'),('Packaging','Packaging'),('Other','Others')])
-    unit=models.CharField(max_length=10,choices=[('ml','ml'),('pcs','pcs'),('g','g'),('kg','kg'),('L','L')])
     description=models.TextField(blank=True)
     class Meta: constraints=[models.UniqueConstraint(fields=['organization','name'],name='material_category_name')]
 
+class MaterialSubcategory(Master):
+    parent=relation(MaterialCategory,related_name='subcategories')
+    unit=models.CharField(max_length=10,choices=[('ml','ml'),('pcs','pcs'),('g','g'),('kg','kg'),('L','L')])
+    description=models.TextField(blank=True)
+    class Meta: constraints=[models.UniqueConstraint(fields=['parent','name'],name='material_subcategory_name')]
+
 class Material(Master):
+    subcategoryRef=relation(MaterialSubcategory,null=True,blank=True,related_name='materials')
+    materialType=models.CharField(max_length=20,default="Other",choices=[('Perfume Oil','Perfume Oil'),('Solvent','Solvent'),('Packaging','Packaging'),('Other','Others')])
     fragrancePrices=models.JSONField(default=dict,blank=True)
     packagingType=models.CharField(max_length=20,blank=True,default="",choices=[("Bottle","Bottle"),("Pump","Pump / Atomizer"),("Cap","Cap"),("Label","Label"),("Dip Tube","Dip Tube"),("Other","Other packaging")])
     compatibleBottleSizes=models.ManyToManyField("BottleSize",blank=True,related_name="compatibleMaterials")
@@ -93,7 +99,14 @@ class Material(Master):
     description=models.TextField(blank=True)
     class Meta: constraints=[models.UniqueConstraint(fields=['organization','code'],name='material_code'),models.UniqueConstraint(fields=['organization','name'],name='material_name')]
 
+class Knot(Master):
+    description=models.TextField(blank=True)
+    price=money()
+    priceBasis=models.CharField(max_length=20,choices=[('reference_100ml','Per 100 ml perfume'),('bottle','Per bottle'),('ml','Per ml')])
+    class Meta: constraints=[models.UniqueConstraint(Lower('name'),models.F('organization'),name='knot_name_ci')]
+
 class Fragrance(Master):
+    knots=models.ManyToManyField(Knot,blank=True,related_name='fragrances',through='FragranceKnot')
     pricesByType=models.JSONField(default=dict,blank=True)
     notes=models.TextField(blank=True)
     code=models.CharField(max_length=60)
@@ -101,6 +114,11 @@ class Fragrance(Master):
     category=models.CharField(max_length=160,blank=True)
     perfumeOilId=relation(Material)
     class Meta: constraints=[models.UniqueConstraint(fields=['organization','code'],name='fragrance_code')]
+
+class FragranceKnot(models.Model):
+    fragrance=models.ForeignKey(Fragrance,on_delete=models.CASCADE,related_name='knotLinks')
+    knot=relation(Knot,related_name='fragranceLinks')
+    class Meta: constraints=[models.UniqueConstraint(fields=('fragrance','knot'),name='fragrance_knot_unique')]
 
 class Concentration(Master):
     description=models.TextField(blank=True)
@@ -146,6 +164,8 @@ class FormulaLine(TenantModel):
     class Meta: constraints=[models.UniqueConstraint(fields=['formula','material'],name='formula_material')]
 
 class Product(Master):
+    blendConfig=models.JSONField(blank=True,default=dict)
+    fragranceFirst=models.BooleanField(default=False)
     fragranceType=models.CharField(max_length=20,blank=True,default="",choices=[("PARFUM","Parfum / Extrait"),("EDP","Eau de Parfum"),("EDT","Eau de Toilette"),("EDC","Eau de Cologne"),("EAU_FRAICHE","Eau Fraiche")])
     pricingMode=models.CharField(max_length=10,default="manual",choices=[("auto","Automatic"),("override","Override"),("manual","Legacy manual")])
     pricingSnapshot=models.JSONField(default=dict,blank=True)
@@ -325,6 +345,11 @@ class PurchaseReturn(TenantModel):
     status=models.CharField(max_length=40,default='Debit Note Issued')
 
 class Invoice(TenantModel):
+    gstRate=models.DecimalField(max_digits=5,decimal_places=2,default=0)
+    taxableAmount=models.DecimalField(max_digits=18,decimal_places=4,default=Decimal('0'))
+    cgst=models.DecimalField(max_digits=18,decimal_places=4,default=Decimal('0'))
+    sgst=models.DecimalField(max_digits=18,decimal_places=4,default=Decimal('0'))
+    igst=models.DecimalField(max_digits=18,decimal_places=4,default=Decimal('0'))
     checkoutKey=models.CharField(max_length=64,blank=True,default='')
     checkoutFingerprint=models.CharField(max_length=64,blank=True,default='')
 
@@ -437,13 +462,12 @@ class CodeSequence(TenantModel):
 class WhatsAppConnection(TenantModel):
     instance_name=models.CharField(max_length=100,unique=True)
     auto_send=models.BooleanField(default=False)
-    class Meta:
-        constraints=[models.UniqueConstraint(fields=['organization'],name='one_whatsapp_connection_per_org')]
+    class Meta: constraints=[models.UniqueConstraint(fields=['organization'],name='one_whatsapp_connection_per_org')]
 
 class WhatsAppInvoiceDelivery(TenantModel):
-    invoice=relation(Invoice,related_name='whatsapp_deliveries')
     phone=models.CharField(max_length=32)
     status=models.CharField(max_length=20,default='pending')
     provider_message_id=models.CharField(max_length=160,blank=True)
     error=models.TextField(blank=True)
     sent_at=models.DateTimeField(null=True,blank=True)
+    invoice=relation(Invoice,related_name='whatsapp_deliveries')

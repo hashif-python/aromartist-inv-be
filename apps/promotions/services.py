@@ -63,7 +63,7 @@ def apply_to_invoice(invoice):
     if amount<=0:return None
     remaining=amount
     for i,line in enumerate(eligible):
-        portion=remaining if i==len(eligible)-1 else min(line.total,rounded(amount*line.total/base))
+        portion=remaining if i==len(eligible)-1 else min(remaining,line.total,rounded(amount*line.total/base))
         portion=min(portion,line.total)
         line.discount+=portion
         line.total-=portion

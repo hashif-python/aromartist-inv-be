@@ -30,10 +30,8 @@ class Command(BaseCommand):
                     if options["apply"]:
                         cat, _ = MaterialCategory.objects.get_or_create(
                             organization=org, name=name,
-                            defaults={"categoryType": category_type, "unit": unit, "status": "active"},
+                            defaults={"status": "active"},
                         )
-                        if cat.categoryType != category_type or cat.unit != unit:
-                            raise ValueError(f"Existing category {name} has conflicting type/unit; resolve manually.")
                         categories[kind] = cat
                 for material in Material.objects.filter(organization=org).select_related("categoryRef"):
                     kind = material_type(material)
