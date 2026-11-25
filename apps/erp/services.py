@@ -37,7 +37,29 @@ def json_num(value):
     if isinstance(value,dict): return {k:json_num(v) for k,v in value.items()}
     return value
 
+from contextvars import ContextVar
+from contextlib import contextmanager
+POS_READ_CACHE = ContextVar('pos_read_cache', default=None)
+
+@contextmanager
+def pos_read_cache(user):
+    token=POS_READ_CACHE.set((user, {}, {}))
+    try: yield
+    finally: POS_READ_CACHE.reset(token)
+
 def owned(model,value,user,field='pk'):
+    state=POS_READ_CACHE.get()
+    if state is not None and state[0] is user and field=='pk' and model.__name__ in ('Material','Fragrance','BottleSize'):
+        from apps.accounts.access import scoped_erp
+        cache=state[1]
+        if model not in cache:
+            qs=scoped_erp(model.objects.filter(organization=user.organization),user)
+            if model.__name__=='Material': qs=qs.select_related('categoryRef','subcategoryRef')
+            cache[model]={str(obj.pk):obj for obj in qs}
+        obj=cache[model].get(str(value))
+        if obj is None: raise ValidationError({field:f'{model.__name__} does not exist in your organization.'})
+        return obj
+
     from apps.accounts.access import scoped_erp
     try: return scoped_erp(model.objects.filter(organization=user.organization),user).get(**{field:value})
     except (model.DoesNotExist,ValueError): raise ValidationError({field:f'{model.__name__} does not exist in your organization.'})

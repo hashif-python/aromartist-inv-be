@@ -191,6 +191,18 @@ def post_line(user,branch,invoice,row,products):
         s.post_stock(user,branch,material,-amount,'POS_PACKAGING',invoice.invoiceNumber,f'Packaging {product.code}: {qty} bottles')
     return m.InvoiceLine.objects.create(organization=user.organization,invoice=invoice,product=product,productName=product.name,sku=product.code,qty=qty,rate=rate,discount=discount,total=total,costSnapshot=s.cash(cost/qty),recipeSnapshot=snapshot,packagingSnapshot=packaging_snapshot,pricingSnapshot=product._pricing['snapshot'])
 
+def pos_stock_balances(user, location):
+    state=s.POS_READ_CACHE.get()
+    key=location.pk if location is not None else None
+    if state is not None and state[0] is user and key in state[2]: return state[2][key]
+    stocks=s.scoped_stocks(user).filter(variant__isnull=True,location__status='active',location__isVirtual=False,material__status='active')
+    if location is not None: stocks=stocks.filter(location=location)
+    balances=defaultdict(lambda: defaultdict(Decimal))
+    for loc,material,qty in stocks.values_list('location_id','material_id','quantity'):
+        balances[loc][material]+=qty
+    if state is not None and state[0] is user: state[2][key]=balances
+    return balances
+
 def producible_stock(product,user,location=None):
     """Sum independent location capacities; never pool ingredients across sites."""
     if product.status!='active' or not product.bottleSizeRef_id or len(product.packagingRecipe)<3 or not product.recipe:
@@ -202,11 +214,7 @@ def producible_stock(product,user,location=None):
     if not required:return 0
     if location is not None or user.organization.singleLocationMode:
         location=perfume_stock_location(user,location)
-    stocks=s.scoped_stocks(user).filter(material_id__in=required,variant__isnull=True,location__status='active',location__isVirtual=False,material__status='active')
-    if location is not None:stocks=stocks.filter(location=location)
-    balances=defaultdict(lambda:defaultdict(Decimal))
-    for loc,key,qty in stocks.values_list('location_id','material_id','quantity'):
-        balances[loc][key]+=qty
+    balances=pos_stock_balances(user,location)
     return sum(max(0,min(int(amounts[key]//qty) for key,qty in required.items())) for amounts in balances.values())
 
 def product_data(product,user,branch=None):
@@ -214,13 +222,13 @@ def product_data(product,user,branch=None):
     rows=[];available=None
     for row in product.recipe:
         material=s.owned(m.Material,row['materialId'],user)
-        balance=m.Stock.objects.filter(organization=user.organization,location=branch,material=material).values_list('quantity',flat=True).first() or Decimal(0) if branch else None
+        balance=pos_stock_balances(user,branch).get(branch.pk,{}).get(material.pk,Decimal(0)) if branch else None
         per=(product.fillVolumeMl*Decimal(row['percentage'])/100).quantize(Decimal('.0001'),rounding=ROUND_HALF_UP)
         if branch and per>0:available=min(available,int(balance//per)) if available is not None else int(balance//per)
         rows.append(dict(**row,name=material.name,type=material_type(material),unit='ml',available=balance))
     packaging=[]
     for r in product.packagingRecipe:
-        material=s.owned(m.Material,r['materialId'],user);balance=m.Stock.objects.filter(organization=user.organization,location=branch,material=material).values_list('quantity',flat=True).first() or Decimal(0) if branch else None
+        material=s.owned(m.Material,r['materialId'],user);balance=pos_stock_balances(user,branch).get(branch.pk,{}).get(material.pk,Decimal(0)) if branch else None
         if branch:available=min(available,int(balance//Decimal(r['quantity']))) if available is not None else int(balance//Decimal(r['quantity']))
         packaging.append(dict(**r,name=material.name,unit='pcs',available=balance))
     available=producible_stock(product,user,branch)

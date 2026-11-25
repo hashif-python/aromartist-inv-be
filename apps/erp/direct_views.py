@@ -26,7 +26,8 @@ class PerfumeProducts(APIView):
         try:offset=int(request.query_params.get('offset',0));limit=int(request.query_params.get('limit',200))
         except (ValueError,TypeError):raise ValidationError('Invalid catalogue pagination.')
         if offset<0 or not 1<=limit<=200:raise ValidationError('Invalid catalogue pagination.')
-        values=[product_data(p,request.user,branch) for p in qs[offset:offset+limit]]
+        with s.pos_read_cache(request.user):
+            values=[product_data(p,request.user,branch) for p in qs.select_related("fragranceId")[offset:offset+limit]]
         if pk:
             if not values:raise ValidationError('Product was not found.')
             return Response(values[0])
